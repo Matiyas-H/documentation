@@ -1,0 +1,89 @@
+---
+title: "Agent responses to tools"
+description: "What the agent does when a tool returns, and how to shape it."
+---
+
+A tool returning is a moment in a live conversation. What the agent does next is
+controlled by `agentReaction` and by what your endpoint returns.
+
+## `agentReaction`
+
+| Value | Behaviour | Use for |
+| --- | --- | --- |
+| `speaks` | Narrates the result immediately. **Default.** | Lookups, confirmations |
+| `listens` | Stays silent and waits for the caller | Tools that hand off — a transfer |
+| `speaks-once` | Speaks only if it did not already speak just before invoking | Tools preceded by a filler line |
+
+`speaks-once` exists for a specific annoyance. If your agent says "let me check
+that for you" and then the tool returns and it says "so, checking that for
+you…", you get double-talk. `speaks-once` suppresses the second.
+
+```json
+{ "agentReaction": "listens" }
+```
+
+<Note>
+  On update, `"agentReaction": null` clears it back to the default.
+</Note>
+
+## Return facts, not sentences
+
+The single most useful habit. Give the agent data and let it phrase:
+
+<CodeGroup>
+
+```json Good
+{ "status": "shipped", "carrier": "Posti", "expectedDate": "2026-09-03" }
+```
+
+```json Bad
+{ "message": "Your order shipped via Posti and arrives on the 3rd" }
+```
+
+</CodeGroup>
+
+The first gets spoken naturally in whatever language the call is in. The second
+leaks your English into a Finnish conversation, and the agent will often read it
+verbatim including the awkward phrasing.
+
+## Shape your failures too
+
+A bare error makes the agent apologise vaguely because it has nothing to work
+with. A shaped one lets it help:
+
+<CodeGroup>
+
+```json Good
+{ "confirmed": false, "reason": "slot_taken", "alternatives": ["14:00", "15:30"] }
+```
+
+```json Bad
+HTTP 500
+```
+
+</CodeGroup>
+
+The agent can offer the alternatives. That turns a dead end into a booking.
+
+Same for "not found" — return `{ "found": false }` with a `200` rather than a
+`404`, so the agent knows the lookup worked and the answer is simply "no".
+
+## Keep responses small
+
+Everything you return enters the conversation's context. A 200-field object
+costs latency on every subsequent turn and buries the three fields that matter.
+
+Return what the agent needs to speak, not your full database row.
+
+## Covering the pause
+
+Even a fast tool is a gap in conversation. Two ways to fill it:
+
+- **`readOnly: true`** on side-effect-free tools lets the runtime run them
+  eagerly while the agent is still speaking — see [Parameters](/tools/parameters)
+- **A filler line in the prompt** — *"If you need to look something up, say
+  you're checking before you do"* — paired with `agentReaction: "speaks-once"`
+  so it does not repeat itself
+
+For corpus searches this is built in: set `kbSearchAnnouncement` on the agent and
+it speaks that line verbatim before every search. See [Corpora](/concepts/corpora).

@@ -1,0 +1,127 @@
+---
+title: "Tool authentication"
+description: "Declaring credentials, storing values, and rotating them."
+---
+
+Most real tools need a credential. Omnia splits that into two halves on purpose:
+
+| | Field | What it is |
+| --- | --- | --- |
+| **Declaration** | `httpSecurityOptions` | *What kind* of credential, and *how* it is sent. Returned by the API. |
+| **Value** | `authTokens` | The secret itself. Encrypted at rest, **never returned**. |
+
+Keeping them apart means you can inspect a tool's auth setup without exposing the
+secret, and rotate the secret without touching the shape.
+
+## Declaring
+
+```json
+{
+  "httpSecurityOptions": {
+    "options": [
+      { "requirements": { "bookingKey": { "headerApiKey": { "name": "X-Api-Key" } } } }
+    ]
+  },
+  "authTokens": { "bookingKey": "sk_live_abc123" }
+}
+```
+
+Each requirement declares **exactly one** of three shapes:
+
+<CodeGroup>
+
+```json Header
+{ "bookingKey": { "headerApiKey": { "name": "X-Api-Key" } } }
+```
+
+```json Query string
+{ "bookingKey": { "queryApiKey": { "name": "api_key" } } }
+```
+
+```json Bearer token
+{ "bookingKey": { "httpAuth": { "scheme": "Bearer" } } }
+```
+
+</CodeGroup>
+
+## `options` are alternatives
+
+The list is **acceptable alternatives** — satisfying any one entry is enough.
+That is how you say "either an API key or a bearer token":
+
+```json
+{
+  "options": [
+    { "requirements": { "apiKey":      { "headerApiKey": { "name": "X-Api-Key" } } } },
+    { "requirements": { "bearerToken": { "httpAuth":     { "scheme": "Bearer" } } } }
+  ]
+}
+```
+
+You may then fill only one of them. `options` must have at least one entry.
+
+## The typo guard
+
+Every key in `authTokens` **must** be declared in
+`httpSecurityOptions.options[].requirements`. Otherwise:
+
+```json
+{ "authTokens": { "bookngKey": "sk_live_abc123" } }
+```
+
+```json
+{
+  "error": {
+    "message": "authTokens key \"bookngKey\" is not declared in httpSecurityOptions.options[].requirements. Either declare the credential or remove the value.",
+    "code": "BAD_REQUEST"
+  }
+}
+```
+
+Without that check the typo would save happily, never satisfy the real
+`bookingKey` requirement, and surface weeks later as an unexplained 401 from your
+own endpoint — with nothing in the logs naming which credential was missing.
+
+The reverse is **not** enforced: declaring two alternatives and filling one is
+intentional.
+
+## Inspecting
+
+Values are never returned. A `GET` shows which slots are filled:
+
+```json
+{
+  "httpSecurityOptions": { "options": [ /* … */ ] },
+  "setCredentials": { "bookingKey": true, "backupKey": false }
+}
+```
+
+`setCredentials` exists so a UI can render `••••••••` for a filled slot and an
+empty field for an unfilled one, without ever handling the secret.
+
+## Rotating
+
+Send only the new value. Zero downtime — the change takes effect on the next
+call.
+
+```bash
+curl -X PATCH "https://api.omnia-voice.com/api/v1/agent-tools/TOOL_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "authTokens": { "bookingKey": "sk_live_NEW" } }'
+```
+
+Clear every slot with `"authTokens": null`. The same `null`-clears behaviour
+applies to `agentReaction`, `httpSecurityOptions`, and `timeout`.
+
+## How values are handled
+
+Credentials are encrypted at rest, decrypted only while a single call's payload
+is being assembled, and redacted from logging. They are never included in an API
+response.
+
+<Warning>
+  Client tools cannot carry credentials — they run in the browser, where the user
+  can read anything the page can. If a secret is involved, it must be an HTTP
+  tool.
+</Warning>

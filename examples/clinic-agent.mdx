@@ -1,0 +1,218 @@
+---
+title: "Example: a clinic receptionist"
+description: "End to end — agent, corpus, tools, and a phone number."
+---
+
+A complete build. By the end, a real phone number is answered by an agent that
+knows your policies, can look up and book appointments, and hangs up properly.
+
+## What we're building
+
+<CardGroup cols={2}>
+  <Card title="Answers the phone" icon="phone">
+    Inbound, in Finnish and English.
+  </Card>
+  <Card title="Knows the policies" icon="books">
+    Opening hours, cancellations, insurance — from a corpus.
+  </Card>
+  <Card title="Books appointments" icon="calendar-check">
+    A real HTTP tool against your system.
+  </Card>
+  <Card title="Ends cleanly" icon="phone-slash">
+    The `hangUp` system tool.
+  </Card>
+</CardGroup>
+
+<Steps>
+
+<Step title="Pick a language and voice">
+
+```bash
+curl "https://api.omnia-voice.com/api/v1/languages" -H "X-API-Key: $OMNIA_API_KEY"
+curl "https://api.omnia-voice.com/api/v1/voices?languageCode=fi" -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+Listen to each `previewUrl` at phone quality before deciding. A voice that reads
+well in a list can sound thin on a narrowband call.
+
+</Step>
+
+<Step title="Create the agent">
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/agents" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Northside reception",
+    "description": "Answers the main line, books appointments",
+    "status": "ACTIVE",
+    "kbSearchAnnouncement": "Hetkinen, katson asiaa.",
+    "config": {
+      "languageId": "LANGUAGE_ID",
+      "voiceId": "VOICE_ID",
+      "greeting": "Northside Dental, Mia puhelimessa. Kuinka voin auttaa?",
+      "basePrompt": "You are Mia, the receptionist at Northside Dental in Helsinki. You are warm, brief, and never guess. If you do not know something, say so and offer to take a message. You never give clinical advice.",
+      "context": "Open 8-18 on weekdays, closed weekends. Address: Satamakatu 12. Dr. Chen does implants; Dr. Patel does orthodontics.",
+      "customInstructions": "- Confirm the caller name and a callback number before ending.\n- Never quote prices; offer a callback instead.\n- Escalate anything involving pain or bleeding to a human immediately.",
+      "model": "llama",
+      "temperature": 0,
+      "firstSpeaker": "agent",
+      "interruptible": false,
+      "maxDuration": 600,
+      "inactivityTimeout": 20,
+      "inactivityAction": "prompt",
+      "recordingEnabled": true
+    }
+  }'
+```
+
+Why these settings:
+
+- **`firstSpeaker: agent`** — inbound callers expect to be greeted
+- **`interruptible: false`** — the greeting cannot be talked over, so a recording notice is actually heard
+- **`temperature: 0`** — a receptionist should answer the same question the same way
+- **`maxDuration: 600`** — ten minutes is generous for reception; the 50-minute default lets a stuck call burn credits
+- **`inactivityTimeout: 20` + `prompt`** — twenty seconds of silence gets a spoken check-in, not a silent disconnect
+
+<Note>
+  The agent speaks Finnish here, so `greeting` and `kbSearchAnnouncement` are
+  written in Finnish. They are spoken **verbatim** and never translated.
+</Note>
+
+</Step>
+
+<Step title="Add the knowledge">
+
+Create a corpus in the [dashboard](https://dashboard.omnia-voice.com/dashboard/corpus)
+and upload your policy documents — PDFs, pasted text, or a URL to crawl.
+
+Wait until every source shows **`PROCESSED`**. Testing before then produces an
+agent that correctly says it cannot find something, which looks like a bug but
+is the system telling the truth.
+
+Then link it:
+
+```bash
+curl -X PATCH "https://api.omnia-voice.com/api/v1/agents/AGENT_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "corpora": ["CORPUS_ID"], "changeNote": "Added clinic policies" }'
+```
+
+The agent now has a `search_...` tool automatically. You do not configure it.
+
+<Tip>
+  `kbSearchAnnouncement` — "Hetkinen, katson asiaa." — is spoken before each
+  search. Retrieval takes a moment, and silence on a phone call feels much
+  longer than it is.
+</Tip>
+
+</Step>
+
+<Step title="Add the booking tool">
+
+Build it as in [the authenticated tool example](/examples/authenticated-tool),
+then attach it along with `hangUp`:
+
+```bash
+# your booking tool
+curl -X POST "https://api.omnia-voice.com/api/v1/agents/AGENT_ID/tools" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "toolIds": ["BOOKING_TOOL_ID"] }'
+
+# find the hangUp system tool
+curl "https://api.omnia-voice.com/api/v1/agent-tools/system" -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+<Warning>
+  Without `hangUp` the agent **cannot end a call**. It finishes talking and
+  waits, and the caller sits in silence wondering whether to hang up. This is
+  the single most common omission on a first agent.
+</Warning>
+
+</Step>
+
+<Step title="Test before the number is live">
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/calls/create" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "agentId": "AGENT_ID", "connectionType": "webrtc" }'
+```
+
+Connect with the [SDK](/voice-sdk/overview) and try to break it — **in Finnish**,
+because that is what callers will speak:
+
+| Try | Looking for |
+| --- | --- |
+| "Mitkä ovat aukioloajat?" | Answers from the corpus, after the announcement |
+| "Paljonko implantti maksaa?" | Refuses to quote, offers a callback |
+| Ask something absent from the corpus | Admits it, does not invent |
+| Book an appointment | Confirms date, time, and name *before* calling the tool |
+| Go silent for 25 seconds | Spoken check-in, not a dropped line |
+| "Kiitos, siinä kaikki" | Says goodbye and actually hangs up |
+
+</Step>
+
+<Step title="Put it on the phone">
+
+```bash
+curl "https://api.omnia-voice.com/api/v1/numbers?status=unassigned" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+
+curl -X PATCH "https://api.omnia-voice.com/api/v1/numbers/NUMBER_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "agentId": "AGENT_ID" }'
+```
+
+Then call it yourself. Phone audio is narrowband and unflattering — check the
+greeting still sounds right, there is no long gap before it speaks, and it
+handles background noise.
+
+To unassign, send `{ "agentId": null }`.
+
+</Step>
+
+</Steps>
+
+## Then iterate
+
+Change one thing at a time and say why:
+
+```bash
+curl -X PATCH "https://api.omnia-voice.com/api/v1/agents/AGENT_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "config": { "inactivityTimeout": 30 },
+    "changeNote": "Callers said 20s felt rushed while finding their calendar"
+  }'
+```
+
+Every change that actually changes something creates a version. Six weeks later
+"made it friendlier" tells you nothing; the note above tells you everything.
+
+<Warning>
+  Version snapshots capture the personality fields, language, and voice — **not**
+  tool assignments, corpora, or call settings. Restoring an old version brings
+  back the older wording but leaves today's tools and timeouts in place.
+</Warning>
+
+## Reading the calls
+
+```bash
+curl "https://api.omnia-voice.com/api/v1/calls?pageSize=50" -H "X-API-Key: $OMNIA_API_KEY"
+curl "https://api.omnia-voice.com/api/v1/calls/CALL_ID"     -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+A call is finished once `endTime` is populated. `/calls` uses **cursor**
+pagination (`cursor` / `pageSize`), not `page` / `limit` like the rest of the API.
+
+<Note>
+  There is no webhook for call events — poll `GET /calls` with a cursor rather
+  than polling each call individually.
+</Note>

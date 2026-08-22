@@ -1,47 +1,52 @@
 ---
 title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+description: "Pick the path that matches what you are building."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+Four ways in. They all end with a working agent — the difference is how you
+reach it.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<CardGroup cols={2}>
+  <Card title="In the browser" icon="window" href="/quickstart/browser">
+    A talking agent on a web page. The fastest way to hear it work.
+  </Card>
+  <Card title="Answering the phone" icon="phone" href="/quickstart/inbound-phone">
+    Point a number at an agent and have it answer.
+  </Card>
+  <Card title="Outbound calls" icon="phone-arrow-up-right" href="/quickstart/outbound">
+    Have an agent call someone.
+  </Card>
+  <Card title="Your own telephony" icon="tower-cell" href="/quickstart/byot">
+    Bridge Twilio, Telnyx, or Plivo yourself.
+  </Card>
+</CardGroup>
 
-## Prerequisites
+<Note>
+  All four need an API key from
+  [**API Keys**](https://dashboard.omnia-voice.com/dashboard/api-keys). Keep it
+  in your environment as `OMNIA_API_KEY` and never ship it to a browser.
+</Note>
 
-Before you begin, you must have:
+## Not sure?
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+Start with **[the browser](/quickstart/browser)**. It needs no phone number and
+no carrier, and hearing the agent answer is the quickest way to know whether the
+prompt is right. Everything you configure there carries over unchanged to a
+phone line.
 
-## Get started
+## What every path shares
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
-
-    ```bash
-    npm install your-package
-    ```
+  <Step title="An agent">
+    Personality, voice, language, and call behaviour. Created once, reached
+    everywhere. See [Agents](/concepts/agents).
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
-
-    ```bash
-    your-cli init
-    ```
+  <Step title="A call">
+    Created server-side with your API key, returning a short-lived
+    `websocketUrl`. See [Calls](/concepts/calls).
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
-
-    ```bash
-    your-cli start
-    ```
+  <Step title="Tools and knowledge, when you need them">
+    [Tools](/tools/overview) to act, [corpora](/concepts/corpora) to answer from
+    your documents.
   </Step>
 </Steps>
-
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>

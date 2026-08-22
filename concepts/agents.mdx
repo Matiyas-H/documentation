@@ -1,0 +1,202 @@
+---
+title: "Agents"
+description: "What an agent is, what it is made of, and how changes are tracked."
+---
+
+An **agent** is a saved configuration for a voice conversation. It holds a
+personality, a voice, a language, call behaviour, and links to whatever tools and
+knowledge it should have. Create it once and reach it from anywhere — a phone
+number, an outbound call, the browser, or your own WebSocket.
+
+## Anatomy
+
+An agent has a top level and a `config` block.
+
+<ResponseField name="name" type="string" required>
+  Human-readable name, shown in the dashboard and call logs. Maximum 100
+  characters.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Free text for your own reference. Not sent to the model.
+</ResponseField>
+
+<ResponseField name="status" type="enum">
+  `ACTIVE`, `INACTIVE`, or `SUSPENDED`. Only `ACTIVE` agents accept calls.
+</ResponseField>
+
+<ResponseField name="config" type="object" required>
+  Everything about how the agent sounds and behaves. Detailed below.
+</ResponseField>
+
+<ResponseField name="functions" type="array">
+  Built-in call functions. Each has a `type` of `CALL_TRANSFER`, `END_CALL`,
+  `CALENDAR_CHECK`, or `CALENDAR_BOOK`, plus `name`, `description`, and `config`.
+</ResponseField>
+
+<ResponseField name="corpora" type="string[]">
+  Corpus IDs to attach. Each becomes a `search_{name}` tool on the agent
+  automatically. See [Corpora](/concepts/corpora).
+</ResponseField>
+
+<ResponseField name="kbSearchAnnouncement" type="string">
+  Spoken verbatim before a corpus search, to cover the lookup pause. Maximum
+  300 characters. See [Corpora](/concepts/corpora).
+</ResponseField>
+
+<ResponseField name="changeNote" type="string">
+  A note recorded against the version this update creates. Only meaningful on
+  `PATCH`.
+</ResponseField>
+
+<Note>
+  **Request and response are not symmetric.** You send configuration under
+  `config`; the API returns it under **`standardConfig`** (or `customProvider`
+  for custom-provider agents), alongside a `type` discriminator of `"standard"`
+  or `"custom"`. Read from `standardConfig`, write to `config`.
+</Note>
+
+### Personality
+
+These four fields are assembled into the agent's system prompt, in this order.
+
+| Field | Purpose |
+| --- | --- |
+| `basePrompt` | **Who the agent is.** Role, tone, boundaries. The most important field. |
+| `greeting` | The exact opening line, spoken verbatim when the agent speaks first. |
+| `context` | Background facts — hours, address, policies, product names. |
+| `customInstructions` | Rules of engagement — what to always do, what to never do. |
+| `questions` | Follow-up questions the agent should work toward answering. |
+
+These five fields are assembled into one system prompt in a defined order, with
+empty fields omitted — see [Writing agent prompts](/guides/prompting).
+
+<Tip>
+  Put **identity** in `basePrompt` and **facts** in `context`. Prompts that mix
+  the two tend to drift, because the model cannot tell which parts are its
+  character and which are merely true today. Facts that change often belong in a
+  [corpus](/concepts/corpora) instead.
+</Tip>
+
+### Voice and language
+
+<ResponseField name="languageId" type="string" required>
+  From [`GET /languages`](/api-reference/introduction). Sets the primary
+  language, though the agent auto-detects and can switch mid-call.
+</ResponseField>
+
+<ResponseField name="voiceId" type="string" required>
+  From [`GET /voices`](/api-reference/introduction). Filter by `languageCode` and
+  preview with each voice's `previewUrl` before choosing.
+</ResponseField>
+
+### Model
+
+<ResponseField name="model" type="enum" default="llama">
+  Which model reasons during the call.
+
+  | Value | Model | Best for |
+  | --- | --- | --- |
+  | `llama` | Meta Llama 3.3 70B | Default. Strongest general reasoning. |
+  | `gemma` | Google Gemma 3 27B | Faster and lighter for simple flows. |
+  | `glm` | GLM 4 | Strong multilingual performance. |
+</ResponseField>
+
+### Call behaviour
+
+See [Calls](/concepts/calls) for the full picture. In brief:
+
+<ResponseField name="temperature" type="number" default="0">
+  Response variability. Accepted range **0–1**. Keep at `0` for transactional
+  agents where consistency matters more than personality.
+</ResponseField>
+
+<ResponseField name="maxDuration" type="integer" default="3000">
+  Hard cap in seconds. Accepted range **60–7200**; the default of 3000 is 50
+  minutes.
+</ResponseField>
+
+<ResponseField name="firstSpeaker" type="enum" default="agent">
+  `agent` opens with the greeting. `user` waits for the caller. Outbound calls
+  always wait, whatever this says — the person answering speaks first.
+</ResponseField>
+
+<ResponseField name="interruptible" type="boolean" default="false">
+  Whether the caller can talk over the agent's **first message**. Later turns are
+  always interruptible.
+</ResponseField>
+
+<ResponseField name="recordingEnabled" type="boolean" default="true">
+  Whether audio is stored and retrievable after the call.
+</ResponseField>
+
+## Attachments
+
+Agents gain capability by linking to other resources:
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="wrench" href="/tools/overview">
+    Let the agent call your API mid-conversation.
+  </Card>
+  <Card title="Corpora" icon="books" href="/concepts/corpora">
+    Ground answers in your indexed documents.
+  </Card>
+  <Card title="Phone numbers" icon="phone" href="/telephony/phone-numbers">
+    Answer inbound calls on a number you own.
+  </Card>
+  <Card title="Call records" icon="clipboard-list" href="/concepts/calls">
+    Transcripts, duration, and cost after each call.
+  </Card>
+</CardGroup>
+
+## Versioning
+
+Every update that actually changes something creates a **version** — a snapshot
+of the agent as it was *before* the edit, with an optional change note.
+
+Updates that change nothing do not create a version, so history stays readable
+rather than filling with no-op saves. Browse and restore versions from the agent
+page in the dashboard.
+
+<Warning>
+  A version snapshot captures the personality fields, language, and voice. It
+  does **not** currently capture tool assignments, linked knowledge bases, or the
+  call-behaviour settings. Restoring an old version brings back the older
+  wording, but leaves today's tools and call settings in place.
+</Warning>
+
+## Workspaces
+
+Agents belong to a workspace. An API key reaches only its own workspace's
+agents, and all usage bills to that workspace's owner — so a team member's calls
+are paid by the account that owns the workspace, not by the member.
+
+## Lifecycle
+
+```bash
+# create
+POST   /agents
+
+# list
+GET    /agents?page=1&limit=50&status=ACTIVE
+
+# read
+GET    /agents/{id}
+
+# update — partial, creates a version
+PATCH  /agents/{id}
+
+# delete — cascades to config, tools, versions
+DELETE /agents/{id}
+```
+
+<Warning>
+  Updates use **`PATCH`**, not `PUT`. Send only the fields you are changing;
+  omitted fields keep their current values. There is no `PUT` handler on this
+  resource — a `PUT` request will not update the agent.
+</Warning>
+
+<Note>
+  Deleting an agent also deletes its config, tool assignments, and version
+  history. Call records are kept for billing and audit.
+</Note>

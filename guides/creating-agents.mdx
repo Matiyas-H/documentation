@@ -1,0 +1,102 @@
+---
+title: "Creating an agent"
+description: "Take an agent from blank to production-ready."
+---
+
+The [quickstart](/quickstart) gets you a working agent. This is how to make one
+good enough to put on a real phone line.
+
+## Write the prompt in layers
+
+Split what you know across the fields rather than stuffing it all into
+`basePrompt`.
+
+```json
+{
+  "basePrompt": "You are Mia, the receptionist at Northside Dental. You are warm, brief, and never guess. If you don't know something, say so and offer to take a message.",
+  "context": "Open 8am-6pm weekdays, closed weekends. Address: 12 Harbour Road. Dr. Chen does implants; Dr. Patel does orthodontics.",
+  "customInstructions": "Always confirm the caller's name and callback number before ending. Never quote prices — offer to have someone call back.",
+  "greeting": "Northside Dental, this is Mia. How can I help?"
+}
+```
+
+Identity in `basePrompt`, facts in `context`, rules in `customInstructions`.
+Prompts that blend them drift, because the model cannot tell which parts are its
+character and which are merely true this month.
+
+<Card title="How these become one prompt" icon="wand-magic-sparkles" href="/guides/prompting">
+  The exact assembly order, what gets omitted when a field is empty, and how
+  `firstSpeaker` changes what the agent is told.
+</Card>
+
+<Tip>
+  The single highest-value sentence you can add is a refusal: *"If you don't know
+  something, say so."* Without it, an agent under pressure invents an answer —
+  and on a phone call nobody can see it happening.
+</Tip>
+
+## Choose the voice deliberately
+
+Pull voices for your language and actually listen to the `previewUrl`. A voice
+that reads well in a list can be wrong at conversational pace.
+
+```bash
+curl "https://api.omnia-voice.com/api/v1/voices?languageCode=fi" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+## Set the call behaviour
+
+For an inbound line, this is usually right:
+
+```json
+{
+  "firstSpeaker": "agent",
+  "interruptible": false,
+  "temperature": 0,
+  "maxDuration": 600,
+  "inactivityTimeout": 20,
+  "inactivityAction": "prompt",
+  "recordingEnabled": true
+}
+```
+
+Why: the agent greets (callers expect it), the greeting cannot be talked over
+(so a recording notice is actually heard), answers stay consistent, calls cannot
+run away, and twenty seconds of silence prompts a check-in rather than a hang-up.
+
+See [Calls](/concepts/calls) for every setting.
+
+## Test before you point a number at it
+
+Create a browser call and talk to it. Then deliberately try to break it:
+
+- Ask something it cannot know — does it admit that, or invent?
+- Interrupt mid-sentence — does it recover?
+- Go silent — does the inactivity handling feel natural?
+- Say something off-topic — does it come back gracefully?
+- If it has tools, does it call them at the right moment?
+
+<Warning>
+  Test in the agent's actual language. An agent that performs well in English can
+  behave differently in Finnish or Spanish — different phrasing, different
+  pacing, different failure modes.
+</Warning>
+
+## Then connect it
+
+<CardGroup cols={2}>
+  <Card title="Give it a number" icon="phone" href="/telephony/phone-numbers">
+    Answer inbound calls.
+  </Card>
+  <Card title="Give it tools" icon="wrench" href="/tools/overview">
+    Let it do things, not just talk.
+  </Card>
+</CardGroup>
+
+## Iterating
+
+Every meaningful update creates a [version](/concepts/agents#versioning) with an
+optional note. Change one thing at a time and write down why — six weeks later,
+"made it friendlier" tells you nothing, but "callers thought it was rushing them"
+tells you everything.

@@ -1,0 +1,79 @@
+---
+title: "Credits and billing"
+description: "How usage is metered, who pays, and what happens when the balance runs out."
+---
+
+Usage is metered in **credits**. One credit is one US cent.
+
+| Usage | Rate |
+| --- | --- |
+| Voice agent calls | **8 credits/minute** ($0.08) |
+| Speech to text | **4 credits/minute** ($0.04) |
+
+Calls round up to the nearest minute, with a one-minute minimum.
+
+## Who pays
+
+Credits are charged to the **workspace owner**, not to whoever made the call. A
+team member's calls, an API key's calls, and calls arriving on a workspace phone
+number all draw from the same balance.
+
+This keeps billing predictable when several people share a workspace — and it is
+why separating customers or environments into separate
+[workspaces](/concepts/workspaces) is worth doing.
+
+## Where credits come from
+
+<CardGroup cols={2}>
+  <Card title="Plan allowance" icon="calendar">
+    Your monthly plan includes credits. Higher plans roll unused credits forward
+    for one to three months.
+  </Card>
+  <Card title="Credit packs" icon="cart-shopping">
+    Top-ups for overflow. They do not expire with the billing month.
+  </Card>
+</CardGroup>
+
+Subscription credits are consumed first, then rollover, then packs — so the
+credits that expire soonest are always spent first.
+
+## Running out
+
+Before a call starts, we check there is enough balance for at least a minute.
+
+- **API calls** return `402` with `INSUFFICIENT_CREDITS`
+- **Inbound phone calls** are answered with a spoken message and hung up, rather
+  than ringing out
+
+<Tip>
+  Enable auto-reload in the dashboard so a busy afternoon never silences your
+  phone line. A missed call is more expensive than the credits it would have
+  cost.
+</Tip>
+
+## Watching usage
+
+<Warning>
+  Balance, usage, and subscription endpoints are **dashboard-only**. They
+  authenticate with your logged-in session, not with an API key — calling
+  `/credits`, `/credits/usage`, or `/subscriptions` with `X-API-Key` returns
+  `401`. Check balance and top up in the
+  [dashboard](https://dashboard.omnia-voice.com/dashboard/billing).
+</Warning>
+
+What you *can* read with an API key is the cost of work you have already done:
+
+```bash
+GET /calls/{id}              # includes duration and cost for that call
+GET /pricing/calls/{id}      # detailed cost breakdown for a call
+GET /calls?page=1&limit=50   # costs across a period
+```
+
+For programmatic budget tracking, aggregate over `GET /calls` rather than
+polling a balance endpoint.
+
+<Note>
+  Billing is finalised from the provider's reported duration when the call ends,
+  not from your request — so a call that fails to connect is not billed as a full
+  conversation.
+</Note>

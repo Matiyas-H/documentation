@@ -1,0 +1,110 @@
+---
+title: "Speech to text"
+description: "Transcribe audio files or live streams. No agent involved."
+---
+
+Transcription is available on its own, without building a voice agent. Send audio
+in, get text back.
+
+```
+https://stt.omnia-voice.com
+```
+
+Authenticate with the same key you use for the rest of the API, in the
+`X-API-Key` header.
+
+| | Endpoint | Use it for |
+| --- | --- | --- |
+| **Batch** | `POST /transcribe` | Recordings, uploads, anything already on disk |
+| **Streaming** | `wss://.../stream` | Live audio, as it is being spoken |
+
+Language is auto-detected — there is no language parameter to get wrong.
+
+## Transcribe a file
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "https://stt.omnia-voice.com/transcribe" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: audio/mpeg" \
+  --data-binary @audio.mp3
+```
+
+```javascript Node.js
+import { readFile } from "node:fs/promises";
+
+const audio = await readFile("audio.mp3");
+
+const res = await fetch("https://stt.omnia-voice.com/transcribe", {
+  method: "POST",
+  headers: {
+    "X-API-Key": process.env.OMNIA_API_KEY,
+    "Content-Type": "audio/mpeg",
+  },
+  body: audio,
+});
+
+const { transcript } = await res.json();
+console.log(transcript);
+```
+
+```python Python
+import os, requests
+
+with open("audio.mp3", "rb") as f:
+    res = requests.post(
+        "https://stt.omnia-voice.com/transcribe",
+        headers={
+            "X-API-Key": os.environ["OMNIA_API_KEY"],
+            "Content-Type": "audio/mpeg",
+        },
+        data=f,
+    )
+
+print(res.json()["transcript"])
+```
+
+</CodeGroup>
+
+### Response
+
+```json
+{
+  "transcript": "Hello, this is the transcribed text.",
+  "duration_ms": 5230,
+  "language": "en-US"
+}
+```
+
+<ResponseField name="transcript" type="string">
+  The full text.
+</ResponseField>
+
+<ResponseField name="duration_ms" type="integer">
+  Audio length in milliseconds. This is what you are billed on.
+</ResponseField>
+
+<ResponseField name="language" type="string">
+  The detected language.
+</ResponseField>
+
+## Audio formats
+
+Send the matching `Content-Type` — `audio/mpeg` for MP3, `audio/wav` for WAV,
+`audio/ogg`, `audio/webm`, `audio/mp4`.
+
+<Tip>
+  Quality in beats quality out. 16 kHz mono is plenty for speech and keeps
+  uploads small; a noisy 48 kHz stereo recording transcribes worse than a clean
+  16 kHz one, not better.
+</Tip>
+
+## Billing
+
+4 credits per minute ($0.04), rounded up, one-minute minimum. See
+[Credits](/concepts/credits).
+
+<Card title="Live streaming" icon="tower-broadcast" href="/speech-to-text/streaming">
+  Transcribe audio as it is spoken, with interim results.
+</Card>

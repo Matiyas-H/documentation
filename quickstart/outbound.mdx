@@ -1,0 +1,73 @@
+---
+title: "Quickstart: outbound calls"
+description: "Have an agent place a call."
+---
+
+<Steps>
+
+<Step title="Write the prompt for someone who did not expect you">
+
+An outbound agent is interrupting. Say who is calling and why, in the first
+sentence.
+
+```bash
+curl -X PATCH "https://api.omnia-voice.com/api/v1/agents/AGENT_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "config": {
+      "basePrompt": "You are calling on behalf of Northside Dental to confirm an appointment. Open by saying who you are and why you are calling. If it is a bad time, offer to call back and end politely. Never push.",
+      "customInstructions": "- Confirm you are speaking to the right person before giving any details.\n- If they ask to be removed from calls, confirm you will do that and end the call."
+    }
+  }'
+```
+
+<Note>
+  `firstSpeaker` is ignored on outbound calls. The agent always waits — the
+  callee answered the phone, so they say hello first.
+</Note>
+
+</Step>
+
+<Step title="Place the call">
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/calls/outbound" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentId": "AGENT_ID",
+    "phoneNumber": "+358401234567",
+    "fromNumberId": "NUMBER_ID"
+  }'
+```
+
+Numbers must be **E.164** — a leading `+`, country code, no spaces or dashes.
+Supply the originating number as either `fromNumberId` or `fromNumber`; exactly
+one is required.
+
+</Step>
+
+<Step title="Read the outcome">
+
+```bash
+curl "https://api.omnia-voice.com/api/v1/calls/CALL_ID" -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+A call is finished once `endTime` is populated. `status` carries the end reason.
+
+</Step>
+
+</Steps>
+
+<Warning>
+  Automated outbound calling is regulated and the rules differ sharply by
+  country — consent, permitted hours, identification, do-not-call registers.
+  Check what applies where you are dialling before running a campaign.
+</Warning>
+
+<Card title="Voicemail" icon="voicemail">
+  Answering machines pick up and talk. Give the agent an instruction for it:
+  *"If you reach a recording, leave a short message with the callback number and
+  end the call."*
+</Card>

@@ -1,0 +1,148 @@
+---
+title: "Bring your own telephony"
+description: "Connect Twilio, Telnyx, or Plivo to an agent yourself."
+---
+
+Two ways to put an agent on a phone line:
+
+1. **Assign a number in Omnia** — import it, attach it to an agent, done. See
+   [Phone numbers](/telephony/phone-numbers).
+2. **Bring your own telephony** — you keep the carrier relationship and stream
+   audio to us. That is this page.
+
+BYOT is right when you already run a telephony stack, need call control we do
+not expose, or must keep numbers on an existing account.
+
+## The flow
+
+<Steps>
+  <Step title="A call arrives at your carrier">
+    Your webhook is hit, as it is today.
+  </Step>
+  <Step title="You create an Omnia call session">
+    `POST /calls/create` with the agent and your `connectionType`.
+  </Step>
+  <Step title="You bridge the audio">
+    Point the carrier's media stream at the returned `websocketUrl`.
+  </Step>
+</Steps>
+
+## Creating the session
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/calls/create" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "agentId": "AGENT_ID", "connectionType": "twilio" }'
+```
+
+```json
+{
+  "id": "…",
+  "websocketUrl": "wss://…",
+  "status": "created",
+  "connectionType": "twilio",
+  "agent": { "id": "…", "name": "Front Desk" },
+  "createdAt": "2026-08-22T09:14:02Z"
+}
+```
+
+<ResponseField name="connectionType" type="enum" default="twilio">
+  `twilio`, `telnyx`, `plivo`, `websocket`, or `webrtc`. Anything else returns
+  `400`.
+</ResponseField>
+
+<Note>
+  Telephony transports use **G.711** audio regardless of what you send in the
+  `websocket` block — that is what the phone network carries. Sample rates and
+  `codec` are only read when `connectionType` is `websocket`.
+</Note>
+
+## Twilio
+
+Answer the call with a `<Stream>` pointed at the `websocketUrl`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="wss://…" />
+  </Connect>
+</Response>
+```
+
+In your webhook handler:
+
+```javascript
+app.post("/voice", async (req, res) => {
+  const { websocketUrl } = await (
+    await fetch("https://api.omnia-voice.com/api/v1/calls/create", {
+      method: "POST",
+      headers: {
+        "X-API-Key": process.env.OMNIA_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ agentId: AGENT_ID, connectionType: "twilio" }),
+    })
+  ).json();
+
+  res.type("text/xml").send(
+    `<?xml version="1.0" encoding="UTF-8"?>
+     <Response><Connect><Stream url="${websocketUrl}" /></Connect></Response>`
+  );
+});
+```
+
+<Warning>
+  `<Connect><Stream>` is bidirectional — the agent can speak back. `<Start><Stream>`
+  is send-only and will give you an agent that hears the caller but cannot
+  answer.
+</Warning>
+
+## Telnyx and Plivo
+
+Identical shape — set `connectionType` accordingly and point the provider's
+media-stream feature at `websocketUrl`. The audio contract is the same G.711.
+
+## Your own client
+
+For a mobile app or a custom bridge, use `connectionType: "websocket"` and pick
+your own audio parameters:
+
+```json
+{
+  "agentId": "AGENT_ID",
+  "connectionType": "websocket",
+  "websocket": {
+    "inputSampleRate": 16000,
+    "outputSampleRate": 16000,
+    "codec": "pcm",
+    "enableAudioBuffering": true
+  }
+}
+```
+
+See the [WebSocket protocol](/voice-sdk/websockets) for the message types.
+
+## Practical notes
+
+<AccordionGroup>
+  <Accordion title="Create the session per call" icon="rotate">
+    A `websocketUrl` is short-lived and single-use. Create one when the call
+    arrives, never at boot, and never cache it.
+  </Accordion>
+  <Accordion title="Latency is your webhook's problem too" icon="gauge-high">
+    The caller hears silence from the moment they are answered until audio
+    starts flowing. Create the session and return your XML in one round trip —
+    do not do database work in between.
+  </Accordion>
+  <Accordion title="Credits still apply" icon="coins">
+    BYOT bills the same per-minute rate. An out-of-credit workspace fails at
+    session creation with `402`, so handle that in your webhook and play your own
+    message rather than returning broken XML.
+  </Accordion>
+  <Accordion title="Hanging up" icon="phone-slash">
+    Assign the `hangUp` [system tool](/tools/overview) so the agent can end the
+    call itself. Your carrier's own hangup handling stays yours.
+  </Accordion>
+</AccordionGroup>

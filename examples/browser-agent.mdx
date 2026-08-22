@@ -1,0 +1,204 @@
+---
+title: "Example: voice in your web app"
+description: "The SDK, a client tool that drives your UI, and keeping the key safe."
+---
+
+A voice assistant inside your product that can *act on the page* — scroll to a
+product, open a form, apply a filter — not just talk about it.
+
+## The shape
+
+Your **server** creates the call; your **browser** joins it. That split is what
+keeps your API key private.
+
+```
+browser  ──POST /api/voice/start──▶  your server  ──POST /calls/create──▶  Omnia
+   ◀──────── websocketUrl ─────────                ◀──── websocketUrl ────
+   └────────────────── audio over WebSocket ──────────────────▶
+```
+
+## 1. Your server endpoint
+
+```javascript
+// POST /api/voice/start
+export async function POST(req) {
+  const session = await getSession(req);          // your own auth
+  if (!session) return new Response("Unauthorized", { status: 401 });
+
+  const res = await fetch("https://api.omnia-voice.com/api/v1/calls/create", {
+    method: "POST",
+    headers: {
+      "X-API-Key": process.env.OMNIA_API_KEY,     // stays on the server
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      agentId: process.env.AGENT_ID,
+      connectionType: "webrtc",
+      metadata: { userId: session.userId },       // shows up on the call record
+    }),
+  });
+
+  const { websocketUrl } = await res.json();
+  return Response.json({ websocketUrl });         // only this reaches the browser
+}
+```
+
+<Warning>
+  `OmniaSession` sends your key with `X-API-Key` from wherever it runs.
+  Constructed in the browser with a production key, **that key is visible in
+  devtools.**
+
+  Either do what's shown here — create the call server-side and hand over only
+  the URL — or point the SDK's `baseUrl` at a proxy you control. Direct browser
+  use is fine for internal tools and prototypes, not for a key that can spend
+  credits.
+</Warning>
+
+## 2. Join from the browser
+
+```javascript
+import { OmniaSession } from "@omnia-voice/sdk";
+
+const session = new OmniaSession({ apiKey: PUBLIC_PLACEHOLDER });
+
+session.addEventListener("status", () => {
+  setStatus(session.status);            // connecting | listening | speaking | disconnected
+});
+
+session.addEventListener("transcripts", () => {
+  setTranscripts([...session.transcripts]);
+});
+
+const { websocketUrl } = await (await fetch("/api/voice/start", { method: "POST" })).json();
+await session.joinCall({ websocketUrl });
+```
+
+<Note>
+  Start this from a **real click**. Browsers deny microphone permission far more
+  often when it's requested on page load, and they block audio playback entirely
+  until the user has interacted with the page.
+</Note>
+
+## 3. A client tool that drives the UI
+
+Define the tool with `type: "client"` — no URL, because nothing is being called
+over HTTP:
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/agent-tools" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "client",
+    "name": "Show product",
+    "modelToolName": "showProduct",
+    "description": "Scroll to and highlight a product on the page. Use when the caller asks to see a specific item, or asks what something looks like.",
+    "dynamicParameters": {
+      "productId": {
+        "required": true,
+        "schema": { "type": "string", "description": "The product SKU the caller referred to" }
+      }
+    }
+  }'
+```
+
+<Note>
+  Client tool parameters have **no `location`** — nothing is being placed into an
+  HTTP request.
+</Note>
+
+Then register a handler by name:
+
+```javascript
+session.registerTool("showProduct", async ({ productId }) => {
+  const el = document.querySelector(`[data-product="${productId}"]`);
+  if (!el) return { result: "not_found" };
+
+  el.scrollIntoView({ behavior: "smooth" });
+  el.classList.add("highlight");
+
+  return { result: "shown", responseType: "tool-response" };
+});
+```
+
+The SDK matches invocations to results for you — you never touch an
+`invocationId`.
+
+<Warning>
+  The registered name must match `modelToolName` **exactly**. A mismatch is the
+  most common reason a correctly-defined client tool never fires.
+</Warning>
+
+## 4. Feed the agent context mid-call
+
+`sendText` injects text as though the user had said it. With `deferResponse`,
+the agent absorbs it without being prompted to reply:
+
+```javascript
+// user navigated while talking
+session.sendText(`The user is now viewing the ${page} page.`, true);
+```
+
+That's how you keep a voice assistant aware of what's on screen.
+
+## 5. Controls
+
+```javascript
+session.muteMic();       session.unmuteMic();       session.toggleMicMute();
+session.muteSpeaker();   session.unmuteSpeaker();   session.toggleSpeakerMute();
+await session.leaveCall();
+```
+
+## React
+
+```javascript
+import { OmniaVoiceProvider, useOmniaVoice, useTranscripts,
+         useStatus, useMicrophone } from "@omnia-voice/sdk/react";
+
+function App() {
+  return (
+    <OmniaVoiceProvider config={{ apiKey: KEY, baseUrl: "/api/omnia-proxy" }}>
+      <Assistant />
+    </OmniaVoiceProvider>
+  );
+}
+
+function Assistant() {
+  const { joinCall, leaveCall } = useOmniaVoice();
+  const transcripts = useTranscripts();
+  const status = useStatus();
+  const { isMuted, toggle } = useMicrophone();
+
+  return (
+    <>
+      <button onClick={() => joinCall({ agentId: AGENT_ID })}>Talk</button>
+      <button onClick={toggle}>{isMuted ? "Unmute" : "Mute"}</button>
+      <p>{status}</p>
+      {transcripts.map((t, i) => <p key={i}>{t.speaker}: {t.text}</p>)}
+    </>
+  );
+}
+```
+
+## HTTP or client?
+
+| Use HTTP when | Use client when |
+| --- | --- |
+| The data is in your database | The data is on the page |
+| It's a real mutation | It's a UI change |
+| You need it on phone calls too | Browser or WebSocket only |
+| Secrets are involved | No secrets involved |
+
+<Warning>
+  Client tools **do not exist on phone calls** — there is no client to run them
+  in. An agent that answers a phone number needs HTTP or system tools.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="SDK reference" icon="js" href="/voice-sdk/overview">
+    Every method and event.
+  </Card>
+  <Card title="Client tools" icon="browser" href="/voice-sdk/client-tools">
+    The protocol, with and without the SDK.
+  </Card>
+</CardGroup>

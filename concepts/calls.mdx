@@ -1,0 +1,230 @@
+---
+title: "Calls"
+description: "The four ways to reach an agent, and the settings that shape a conversation."
+---
+
+A **call** is one conversation with an agent. However it starts, the agent
+behaves the same — same prompt, same tools, same knowledge.
+
+## Four ways in
+
+<Tabs>
+
+<Tab title="Inbound phone">
+Assign a number to an agent and it answers every call to that number.
+
+```bash
+PATCH /numbers/{numberId}   { "agentId": "..." }
+```
+
+See [Phone numbers](/telephony/phone-numbers).
+</Tab>
+
+<Tab title="Outbound phone">
+The agent places the call.
+
+```bash
+POST /calls/outbound
+{
+  "agentId": "...",
+  "toNumber": "+358401234567",
+  "fromNumberId": "..."
+}
+```
+
+The agent always waits for the person to speak first here, regardless of the
+agent's `firstSpeaker` — they answered the phone, so they say hello.
+</Tab>
+
+<Tab title="Browser">
+Create the call server-side, connect the browser to the returned `websocketUrl`.
+
+```bash
+POST /calls/create   { "agentId": "..." }
+```
+
+See the [Voice SDK](/voice-sdk/overview).
+</Tab>
+
+<Tab title="Inline">
+No saved agent — pass the whole configuration in the request. Useful when the
+persona is generated per call.
+
+```bash
+POST /calls/inline
+{
+  "systemPrompt": "You are...",
+  "voice": "...",
+  "language": "en",
+  "selectedTools": [ ... ]
+}
+```
+</Tab>
+
+</Tabs>
+
+## Connection types
+
+Every call-creation endpoint takes a `connectionType`, which decides what the
+returned `websocketUrl` is prepared for.
+
+| Value | Transport | Audio |
+| --- | --- | --- |
+| `twilio` | Twilio media stream | G.711, 8000 Hz |
+| `telnyx` | Telnyx media stream | G.711, 8000 Hz |
+| `plivo` | Plivo media stream | G.711, 8000 Hz |
+| `websocket` | Your own client | You choose — `pcm` or `g711`, your sample rates |
+| `webrtc` | Browser, normally via the SDK | Negotiated |
+
+Defaults to `twilio`. Any other value returns `400`.
+
+### WebSocket audio options
+
+Only read when `connectionType` is `websocket` — telephony transports force
+G.711 at 8000 Hz whatever you send.
+
+```json
+{
+  "agentId": "agt_123",
+  "connectionType": "websocket",
+  "websocket": {
+    "inputSampleRate": 16000,
+    "outputSampleRate": 16000,
+    "codec": "pcm",
+    "enableAudioBuffering": true
+  }
+}
+```
+
+<Warning>
+  `inputSampleRate` and `outputSampleRate` are **both required** when
+  `connectionType` is `websocket`. Omitting either returns `400` — they are not
+  defaulted, because guessing a sample rate produces audio that is subtly wrong
+  rather than obviously broken.
+</Warning>
+
+<ResponseField name="codec" type="enum" default="g711">
+  `pcm` for direct integrations, `g711` for telephony.
+</ResponseField>
+
+<ResponseField name="enableAudioBuffering" type="boolean">
+  Buffer audio to smooth jitter on unreliable links.
+</ResponseField>
+
+<ResponseField name="twilioStream" type="boolean">
+  Format the stream for Twilio's `<Stream>` verb.
+</ResponseField>
+
+## Call settings
+
+Set these on the agent's `config`; some can be overridden per call.
+
+### Who speaks first
+
+<ResponseField name="firstSpeaker" type="enum" default="agent">
+  `agent` — opens with `greeting`. Right for inbound: the caller expects to be
+  greeted.
+
+  `user` — waits silently. Right when the other side initiates.
+</ResponseField>
+
+### Interruptions
+
+<ResponseField name="interruptible" type="boolean" default="false">
+  Whether the caller can talk over the agent's **first message only**. Every
+  later turn is interruptible regardless.
+
+  Leave it `false` when the greeting carries something callers must hear — a
+  recording notice, for instance.
+</ResponseField>
+
+### Silence
+
+<ResponseField name="inactivityTimeout" type="integer">
+  Seconds of silence before the agent reacts. Unset means it waits indefinitely.
+</ResponseField>
+
+<ResponseField name="inactivityAction" type="enum">
+  `prompt` — check in ("Are you still there?") and keep waiting.
+
+  `hang_up` — say goodbye and end the call.
+
+  Either way the agent **speaks** first. It is never a silent disconnect, which
+  callers read as a dropped line.
+</ResponseField>
+
+<Note>
+  The spoken line is chosen from the agent's language — Finnish agents say
+  "Oletko vielä siellä?", Swedish "Är du kvar?", and so on, falling back to
+  English for unmapped languages.
+</Note>
+
+### Length and variability
+
+<ResponseField name="maxDuration" type="integer" default="3000">
+  Hard cap in seconds — 50 minutes by default, 7200 maximum. The call ends when
+  it is reached.
+</ResponseField>
+
+<ResponseField name="temperature" type="number" default="0">
+  `0` gives consistent, repeatable answers — the right default for anything
+  transactional. Raise it only when you want more personality and can tolerate
+  more variation.
+</ResponseField>
+
+### Recording
+
+<ResponseField name="recordingEnabled" type="boolean" default="true">
+  Stores the audio for retrieval after the call.
+</ResponseField>
+
+<Warning>
+  Recording consent is your responsibility and the rules differ by jurisdiction —
+  several US states and most of the EU require the caller to be told. If you
+  record, say so in the `greeting`, where it cannot be interrupted.
+</Warning>
+
+## After the call
+
+```bash
+GET /calls                 # list, filter by agent, status, date
+GET /calls/{id}            # detail: duration, status, cost, transcript
+```
+
+Each record carries who was called, how long it ran, why it ended, the
+transcript, and the recording if enabled.
+
+## Knowing when a call ended
+
+There is **no customer-facing webhook subscription for voice calls.** Call
+lifecycle events (`call.started`, `call.joined`, `call.ended`) flow *inbound*
+from the voice provider to Omnia for billing — they are not forwarded on to you,
+and there is no endpoint to subscribe to them.
+
+To detect completion, poll the call record. A call is finished once `endTime` is
+populated:
+
+```bash
+GET /calls/{id}
+```
+
+```json
+{
+  "id": "…",
+  "startTime": "2026-08-22T09:14:02Z",
+  "endTime": "2026-08-22T09:18:44Z",
+  "duration": 282,
+  "status": "hangup",
+  "summary": "…",
+  "transcript": "…"
+}
+```
+
+`duration` is the billed duration in seconds, and `status` carries the end
+reason. While a call is still running, `endTime` is `null`.
+
+<Tip>
+  Poll `GET /calls` with a cursor rather than polling each call individually.
+  It returns the same fields for a whole page of calls in one request, which is
+  far kinder to your rate limit.
+</Tip>

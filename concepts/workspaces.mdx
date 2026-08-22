@@ -1,0 +1,84 @@
+---
+title: "Workspaces"
+description: "How agents, keys, and billing are scoped — and who pays."
+---
+
+A **workspace** is the container everything lives in. Agents, tools, corpora,
+knowledge bases, phone numbers, and API keys all belong to exactly one.
+
+Workspaces are the isolation boundary: an API key reaches its own workspace and
+nothing else.
+
+<Note>
+  Workspaces are managed **in the dashboard**, under
+  [**Workspace**](https://dashboard.omnia-voice.com/dashboard/workspace). There
+  is no API-key endpoint for creating or listing them — those routes authenticate
+  with your dashboard session.
+</Note>
+
+## Members and roles
+
+| Role | Can do |
+| --- | --- |
+| `ADMIN` | Manage members, settings, and billing visibility |
+| `MEMBER` | Use the workspace's agents and resources |
+
+## Who pays
+
+**The person who created the workspace is billed for everything that happens in
+it.** Not the member who placed the call, not the holder of the API key — the
+creator.
+
+That means a team member's calls, an API key's calls, and calls arriving on a
+workspace phone number all draw from one balance. It is what makes shared usage
+predictable.
+
+<Warning>
+  Billing follows workspace **creator**, which is a fixed record rather than a
+  transferable role. If the person who created a workspace leaves the company,
+  usage still bills against their account — moving it means recreating the
+  workspace under someone else. Worth thinking about before a founder or
+  contractor sets one up on your behalf.
+</Warning>
+
+## Why separate workspaces
+
+Because the boundary is real, splitting is the cheapest way to get isolation:
+
+- **Environments** — staging calls cannot touch production agents, and a leaked
+  staging key exposes nothing live.
+- **Customers** — if you resell or run agents for clients, one workspace each
+  keeps their agents, documents, and usage genuinely separate.
+- **Teams** — separate budgets, separate blast radius.
+
+<Tip>
+  Revoking a key affects one workspace. That is the main practical argument for
+  splitting early: it is much easier than untangling one shared workspace after
+  something goes wrong.
+</Tip>
+
+## Keys and workspaces
+
+Every API key carries the workspace it was created in, and scopes every request
+to it. A key cannot see another workspace's agents — requests for them return
+`404` rather than `403`, so a key cannot even confirm that an ID it lacks access
+to exists.
+
+<Note>
+  Keys created before workspaces existed remain scoped to the user who made them
+  and continue to work unchanged.
+</Note>
+
+## Product access
+
+A workspace is entitled to specific products, which controls what appears in the
+dashboard and which routes it can reach. Most workspaces are voice workspaces.
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/authentication">
+    How keys scope to a workspace.
+  </Card>
+  <Card title="Credits" icon="coins" href="/concepts/credits">
+    What usage costs and where the balance lives.
+  </Card>
+</CardGroup>

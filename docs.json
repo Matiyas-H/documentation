@@ -1,72 +1,198 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Omnia Voice",
+  "description": "Build voice AI agents that answer the phone, use your tools, and speak 50+ languages.",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#2D5A27",
+    "light": "#4A7A44",
+    "dark": "#1E3D1A"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+  "favicon": "/logo/favicon.png",
+  "fonts": {
+    "family": "Inter"
   },
   "navbar": {
     "links": [
       {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
+        "label": "Status",
+        "href": "https://www.omnia-voice.com"
       }
     ],
     "primary": {
       "type": "button",
       "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "href": "https://dashboard.omnia-voice.com"
     }
   },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "quickstart/browser",
+              "quickstart/inbound-phone",
+              "quickstart/outbound",
+              "quickstart/byot",
+              "authentication"
+            ]
+          },
+          {
+            "group": "Core concepts",
+            "pages": [
+              "concepts/agents",
+              "concepts/calls",
+              "concepts/corpora",
+              "concepts/workspaces",
+              "concepts/credits"
+            ]
+          },
+          {
+            "group": "Tools",
+            "pages": [
+              "tools/overview",
+              "tools/parameters",
+              "tools/authentication",
+              "tools/agent-responses",
+              "tools/http-vs-client",
+              "tools/async",
+              "tools/built-in"
+            ]
+          },
+          {
+            "group": "Telephony",
+            "pages": [
+              "telephony/overview",
+              "telephony/phone-numbers",
+              "telephony/bring-your-own",
+              "telephony/transfers"
+            ]
+          },
+          {
+            "group": "Apps & SDKs",
+            "pages": [
+              "voice-sdk/overview",
+              "voice-sdk/inline-calls",
+              "voice-sdk/websockets",
+              "voice-sdk/client-tools"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/creating-agents",
+              "guides/prompting"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/order-status-tool",
+              "examples/authenticated-tool",
+              "examples/clinic-agent",
+              "examples/browser-agent"
+            ]
+          },
+          {
+            "group": "Speech to text",
+            "pages": [
+              "speech-to-text/overview",
+              "speech-to-text/streaming"
+            ]
+          },
+          {
+            "group": "Help",
+            "pages": [
+              "faq",
+              "getting-help"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api-reference/introduction"
+            ]
+          }
+        ],
+        "openapi": "openapi.yaml"
+      }
     ]
+  },
+  "api": {
+    "playground": {
+      "display": "interactive"
+    },
+    "examples": {
+      "languages": [
+        "bash",
+        "javascript",
+        "python"
+      ],
+      "defaults": "required"
+    },
+    "mdx": {
+      "server": "https://api.omnia-voice.com/api/v1",
+      "auth": {
+        "method": "key",
+        "name": "X-API-Key"
+      }
+    }
+  },
+  "seo": {
+    "indexing": "all"
+  },
+  "search": {
+    "prompt": "Search the Omnia Voice docs"
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+      "website": "https://www.omnia-voice.com"
+    },
+    "links": [
+      {
+        "header": "Product",
+        "items": [
+          {
+            "label": "Voice agents",
+            "href": "https://www.omnia-voice.com"
+          },
+          {
+            "label": "Pricing",
+            "href": "https://www.omnia-voice.com/pricing"
+          },
+          {
+            "label": "Dashboard",
+            "href": "https://dashboard.omnia-voice.com"
+          }
+        ]
+      },
+      {
+        "header": "Resources",
+        "items": [
+          {
+            "label": "Quickstart",
+            "href": "/quickstart"
+          },
+          {
+            "label": "API reference",
+            "href": "/api-reference/introduction"
+          },
+          {
+            "label": "Contact",
+            "href": "https://www.omnia-voice.com/contact"
+          }
+        ]
+      }
+    ]
   }
 }

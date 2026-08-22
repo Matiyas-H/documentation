@@ -1,0 +1,84 @@
+---
+title: "Phone numbers"
+description: "Point a number at an agent for inbound calls, and use one for outbound."
+---
+
+## Inbound
+
+Assign a number to an agent and it answers every call to that number.
+
+```bash
+# what do I have?
+curl "https://api.omnia-voice.com/api/v1/numbers" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+
+# assign — PATCH the number, set its agentId
+curl -X PATCH "https://api.omnia-voice.com/api/v1/numbers/NUMBER_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "agentId": "AGENT_ID" }'
+
+# unassign — same call, agentId null
+curl -X PATCH "https://api.omnia-voice.com/api/v1/numbers/NUMBER_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "agentId": null }'
+```
+
+Numbers list with a `status` of `assigned` or `unassigned`, and you can filter
+with `GET /numbers?status=unassigned` or `GET /numbers?agentId=...`.
+
+<Note>
+  `GET /agents/{id}/numbers` is read-only. There is no `POST` on it — assignment
+  always happens on the number resource.
+</Note>
+
+Import numbers you already own from **Import Numbers** in the dashboard. Your
+carrier credentials are encrypted at rest and used only to place and receive your
+own calls.
+
+<Note>
+  A number maps to exactly one agent. To route by time of day or menu choice, put
+  one agent on the number and give it a tool that transfers.
+</Note>
+
+## Outbound
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/calls/outbound" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentId": "AGENT_ID",
+    "toNumber": "+358401234567",
+    "fromNumberId": "NUMBER_ID"
+  }'
+```
+
+Numbers must be **E.164** — a leading `+`, country code, no spaces or dashes.
+
+On outbound the agent waits for the other person to speak first, whatever
+`firstSpeaker` says. They answered the phone; they will say hello.
+
+<Warning>
+  Automated outbound calling is regulated, and the rules differ sharply by
+  country — consent, calling hours, identification, do-not-call registers. Check
+  what applies where you are dialling before you run a campaign. This is your
+  obligation, not ours.
+</Warning>
+
+## Testing
+
+Call the number yourself before anyone else does. Listen for:
+
+- Does the greeting sound right at phone quality? Phone audio is narrowband and
+  unflattering — a voice that shines in the browser can sound thin.
+- Is there a gap before the agent speaks?
+- Does it handle background noise and cross-talk?
+- Does it hang up cleanly, or leave the line open?
+
+<Tip>
+  If the agent should be able to end calls itself, assign the `hangUp`
+  [system tool](/tools/overview). Without it, an agent that has finished simply
+  waits — and the caller sits in silence wondering if they should hang up.
+</Tip>

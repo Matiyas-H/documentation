@@ -1,0 +1,150 @@
+---
+title: "Corpora"
+description: "Index your documents so an agent can answer from them mid-call."
+---
+
+A **corpus** is a searchable collection of your documents. Link one to an agent
+and the agent gains a search tool it can call during a conversation — grounding
+its answers in your material rather than in its prompt.
+
+This is how you give an agent knowledge. An older `knowledgeBases` field still
+exists on the agent payload for legacy integrations, but it is deprecated — use
+corpora.
+
+<Note>
+  Corpora are created and managed **in the dashboard**, under
+  [**Corpora**](https://dashboard.omnia-voice.com/dashboard/corpus). There is no
+  API-key endpoint for creating one — the management routes authenticate with
+  your dashboard session. What *is* automatic is the search: once a corpus is
+  linked, the agent queries it on its own during calls.
+</Note>
+
+## What you can put in one
+
+Three kinds of source:
+
+<CardGroup cols={3}>
+  <Card title="File" icon="file-arrow-up">
+    Upload a document. Up to **4 MB** each.
+  </Card>
+  <Card title="Text" icon="align-left">
+    Paste content directly. Up to 4 MB.
+  </Card>
+  <Card title="URL" icon="link">
+    Give a page address and it is fetched and indexed.
+  </Card>
+</CardGroup>
+
+### Supported file types
+
+| Group | Extensions |
+| --- | --- |
+| Documents | `.pdf` `.docx` `.odt` |
+| Spreadsheets | `.xlsx` `.csv` `.ods` |
+| Web & markup | `.html` `.htm` `.xml` `.sgml` |
+| Text & notes | `.txt` `.md` `.mdx` `.markdown` `.rst` `.log` `.tex` `.latex` |
+| Data & config | `.json` `.yaml` `.yml` `.toml` `.css` `.ini` `.conf` `.env` `.properties` |
+| Images | `.jpg` `.jpeg` `.png` `.webp` `.svg` |
+| Code | `.js` `.ts` `.py` `.php` `.rb` `.java` `.c` `.cpp` `.h` `.go` `.rs` `.swift` `.dart` `.sh` `.bat` `.ps1` |
+
+<Warning>
+  **PowerPoint and legacy Office formats are not supported.** Export `.pptx` /
+  `.ppt` slides to PDF, save `.doc` as `.docx` or PDF, and `.xls` as `.xlsx` or
+  `.csv`. Uploading one of these returns an explanatory error rather than
+  failing silently.
+</Warning>
+
+## Indexing
+
+Adding a source does not make it searchable immediately. Each one moves through:
+
+| Status | Meaning |
+| --- | --- |
+| `PENDING` | Queued, not started |
+| `PROCESSING` | Being extracted and indexed |
+| `PROCESSED` | Searchable |
+| `FAILED` | Something went wrong — `errorMessage` explains |
+| `SKIPPED` | Nothing indexable was found in it |
+
+URL sources are fetched in the background, so they sit in `PENDING` briefly
+before processing begins. Large PDFs take longest.
+
+<Tip>
+  Test only once every source shows `PROCESSED`. An agent asked about content
+  that is still indexing will correctly say it cannot find it — which looks like
+  a broken agent but is the system telling the truth.
+</Tip>
+
+## Linking a corpus to an agent
+
+Include corpus IDs in the agent payload, or use the agent page in the dashboard:
+
+```json
+{
+  "name": "Front Desk",
+  "corpora": ["cor_abc123", "cor_def456"],
+  "kbSearchAnnouncement": "Let me look that up for you.",
+  "config": { }
+}
+```
+
+The agent automatically gains a tool named `search_<corpus_name>` — you do not
+create or configure it. Its description tells the model to reach for it whenever
+a caller asks something that corpus might answer.
+
+### Covering the pause
+
+Retrieval takes a moment, and silence on a phone call feels far longer than it
+is. `kbSearchAnnouncement` is spoken **verbatim** immediately before the search:
+
+```json
+{ "kbSearchAnnouncement": "Hetkinen, katson asiaa." }
+```
+
+Write it in whatever language your agent speaks — it is not translated. Maximum
+300 characters, though one short sentence is the right length.
+
+## How search behaves during a call
+
+The agent sends the caller's question, and passages come back ranked. By default
+it retrieves **8** passages; the model may request up to 12.
+
+That default is deliberately generous. On real PDFs the passage containing the
+actual answer — a row in a pricing table, say — often ranks tenth or lower,
+because generic introductory text matches the query more strongly. Returning
+more passages means the answer is present in context for the model to find.
+
+## Writing documents that retrieve well
+
+Retrieval returns passages, not whole files. What survives being lifted out of
+context:
+
+- **Put the answer next to the question.** A heading phrased as a question with
+  the answer directly beneath is close to ideal.
+- **Keep related facts together.** A price three paragraphs away from the product
+  name may come back without it.
+- **Prefer several small documents** over one large one — chunk boundaries fall
+  in kinder places.
+- **Avoid cross-references.** "See section 4.2" is meaningless once a passage is
+  read on its own.
+
+<Warning>
+  Tables in PDFs are the most common disappointment. A table that reads clearly
+  to a human frequently flattens into unusable text when extracted. If specific
+  numbers matter, state them in a sentence as well as showing the table.
+</Warning>
+
+## Corpora and workspaces
+
+A corpus belongs to a workspace and can be linked to any number of agents in it.
+Update the documents once and every agent using it answers from the new version —
+there is no per-agent copy to keep in sync.
+
+<CardGroup cols={2}>
+  <Card title="Attach one to an agent" icon="robot" href="/concepts/agents">
+    The `corpora` field on the agent payload.
+  </Card>
+  <Card title="Tools" icon="wrench" href="/tools/overview">
+    Let the agent act, not just recall.
+  </Card>
+</CardGroup>

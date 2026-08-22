@@ -1,33 +1,57 @@
-> **First-time setup**: Customize this file for your project. Prompt the user to customize this file for their project.
-> For Mintlify product knowledge (components, configuration, writing standards),
-> install the Mintlify skill: `npx skills add https://mintlify.com/docs`
+# Working in this repo
 
-# Documentation project instructions
+Documentation for the **Omnia Voice** API — voice AI agents that answer the
+phone, call your tools, and speak 50+ languages. Published with Mintlify at
+`omnia-voice.com/docs`.
 
-## About this project
+## The one rule
 
-- This is a documentation site built on [Mintlify](https://mintlify.com)
-- Pages are MDX files with YAML frontmatter
-- Configuration lives in `docs.json`
-- Use the Mintlify MCP server, `https://mcp.mintlify.com`, to edit content and settings via MCP
-- Use the Mintlify docs MCP server, `https://www.mintlify.com/docs/mcp`, to query information about using Mintlify via MCP
+**The route handler is the source of truth.** Not the README, not this file, not
+an older version of the docs, and not your recollection of how the API probably
+works.
 
-## Terminology
+The API lives in [`omnia-v/omnia`](https://github.com/omnia-v/omnia) under
+`app/api/v1/`. Each route's contract is defined by:
 
-{/* Add product-specific terms and preferred usage */}
-{/* Example: Use "workspace" not "project", "member" not "user" */}
+- its exported HTTP methods in `route.ts`
+- its Zod schema in `lib/api/v1/validators/`
+- its response formatter (`formatAgentResponse`, `formatToolResponse`, …)
 
-## Style preferences
+Read those before writing. Every one of these was documented wrongly at some
+point because someone trusted a document instead of the code:
 
-{/* Add any project-specific style rules below */}
+| Was documented as | Actually |
+| --- | --- |
+| `PUT /agents/{id}` | `PATCH` — no `PUT` handler exists |
+| `POST /agents/{id}/numbers` | Read-only. Assignment is `PATCH /numbers/{id}` |
+| status `ARCHIVED` | `ACTIVE \| INACTIVE \| SUSPENDED` |
+| `DELETE /agents/{id}` → 200 | 204, no body |
+| response `joinUrl` | `websocketUrl` |
+| voice webhooks | Do not exist — the only webhook model is chatbot-scoped |
+| `GET /credits` with an API key | Session-only, returns 401 |
 
-- Use active voice and second person ("you")
-- Keep sentences concise — one idea per sentence
-- Use sentence case for headings
-- Bold for UI elements: Click **Settings**
-- Code formatting for file names, commands, paths, and code references
+## Checks that must pass
 
-## Content boundaries
+```bash
+npx mint@latest broken-links
+npx @redocly/cli@latest lint openapi.yaml
+```
 
-{/* Define what should and shouldn't be documented */}
-{/* Example: Don't document internal admin features */}
+Both must be clean. Every endpoint mentioned in prose must exist in
+`openapi.yaml` **and** in a real handler.
+
+## Deliberately absent
+
+- **Actions and knowledge bases** — deprecated in favour of corpora and tools
+- **Chatbots, conversations, service-agents** — a different product surface
+- **Noise/VAD settings** — hardcoded in the platform, not user-configurable
+- **Corpus management endpoints** — session-only, so documented as a dashboard
+  workflow rather than API surface
+
+Do not add them back without checking whether that is still true.
+
+## Style
+
+Explain *why*, not just *what*. A constraint without its reason gets removed by
+the next person. Prefer a short warning that names the real failure over a long
+description of correct usage.

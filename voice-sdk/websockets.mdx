@@ -1,0 +1,131 @@
+---
+title: "WebSocket protocol"
+description: "Connect to a call directly, without the SDK."
+---
+
+The SDK is a convenience. If you are not in a browser — a mobile app, a server
+bridge, your own telephony stack — connect to the WebSocket yourself.
+
+## Getting a URL
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/calls/create" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentId": "AGENT_ID",
+    "connectionType": "websocket",
+    "websocket": { "inputSampleRate": 16000, "outputSampleRate": 16000, "codec": "pcm" }
+  }'
+```
+
+The response carries **`websocketUrl`**:
+
+```json
+{
+  "id": "…",
+  "websocketUrl": "wss://…",
+  "status": "created",
+  "connectionType": "websocket",
+  "agent": { "id": "…", "name": "Front Desk" },
+  "createdAt": "2026-08-22T09:14:02Z"
+}
+```
+
+<Warning>
+  The field is `websocketUrl`. It is short-lived and single-use — create a fresh
+  one per call rather than caching it. No additional authentication is needed on
+  the socket itself; the URL *is* the credential, which is also why it must not
+  be shared or logged.
+</Warning>
+
+## Audio
+
+Binary frames carry audio; text frames carry JSON.
+
+| `connectionType` | Codec | Use |
+| --- | --- | --- |
+| `websocket` | `pcm` (or `g711`) | Direct integrations — set the sample rates you want |
+| `twilio` / `telnyx` / `plivo` | `g711` | Telephony, forced regardless of what you send |
+| `webrtc` | — | Browser transport, normally via the SDK |
+
+For `pcm`, send 16-bit mono at the `inputSampleRate` you requested.
+
+## Messages you receive
+
+| Type | Meaning |
+| --- | --- |
+| `transcript` | Speech recognised. Carries the speaker (`user` or `agent`) and whether it is final |
+| `state` | The agent started or stopped speaking |
+| `client_tool_invocation` | The agent is calling one of your client tools |
+| `hangup` | The call is ending |
+| `error` | Something failed |
+
+## Messages you send
+
+| Type | Purpose |
+| --- | --- |
+| `client_tool_result` | Your answer to an invocation |
+| `user_text_message` | Inject text as though the user spoke it |
+
+## Client tool calls
+
+An invocation arrives as:
+
+```json
+{
+  "type": "client_tool_invocation",
+  "invocationId": "inv_abc123",
+  "toolName": "transferCall",
+  "parameters": { "department": "billing" }
+}
+```
+
+Do the work, then reply with the **same `invocationId`**:
+
+```javascript
+ws.send(JSON.stringify({
+  type: "client_tool_result",
+  invocationId: "inv_abc123",
+  result: "Transferred to billing",
+}));
+```
+
+<Warning>
+  The `invocationId` is how a result is matched to its call. Send a different one
+  — or none — and the agent waits for an answer that never arrives, which the
+  caller hears as the agent freezing mid-sentence.
+</Warning>
+
+Report failures rather than staying silent, so the agent can explain and move on:
+
+```javascript
+ws.send(JSON.stringify({
+  type: "client_tool_result",
+  invocationId: "inv_abc123",
+  error: "No billing agent is available right now",
+}));
+```
+
+<Note>
+  Using the SDK? `registerTool` handles all of this — invocation matching,
+  results, and errors — so you never touch `invocationId` yourself.
+</Note>
+
+## Injecting a message
+
+Push text into a live call as though the caller had spoken it. This is how a
+deferred tool result gets back into the conversation:
+
+```javascript
+ws.send(JSON.stringify({
+  type: "user_text_message",
+  text: "The refund was approved — reference 4471.",
+}));
+```
+
+## Ending
+
+Close the socket to hang up, or watch for the `hangup` message when the agent
+ends it. For the agent to be *able* to end a call gracefully, assign the `hangUp`
+[system tool](/tools/overview) — without it, a finished agent simply waits.

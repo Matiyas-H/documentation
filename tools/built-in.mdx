@@ -1,0 +1,60 @@
+---
+title: "Built-in tools"
+description: "Platform call control. Attach by name, no configuration."
+---
+
+Built-in tools are maintained by the platform and need no setup. List them:
+
+```bash
+curl "https://api.omnia-voice.com/api/v1/agent-tools/system" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+| Tool | What it does |
+| --- | --- |
+| `hangUp` | Ends the call |
+| `playDtmfSounds` | Sends touch tones, for navigating a phone menu |
+
+## `hangUp`
+
+<Warning>
+  **Without `hangUp` an agent cannot end a call.** It finishes speaking and
+  waits, and the caller sits in silence wondering whether to hang up.
+
+  This is the single most common omission on a first agent. Attach it to
+  anything that answers a phone.
+</Warning>
+
+The agent decides when the conversation is genuinely over. Reinforce it in the
+prompt if callers tend to trail off:
+
+```text
+When the caller says goodbye or confirms they need nothing else, say goodbye and
+end the call.
+```
+
+## `playDtmfSounds`
+
+For agents that call *into* another system — pressing 2 for support, entering an
+account number at a prompt.
+
+```text
+When you reach an automated menu, press the option for customer service, then
+enter the account number followed by the hash key.
+```
+
+<Note>
+  Touch tones are a telephony concept. On browser calls the tool exists but has
+  nothing to signal.
+</Note>
+
+## Attaching
+
+The same call as any other tool — use the `id` from `/agent-tools/system`:
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/agents/AGENT_ID/tools" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "toolIds": ["HANGUP_TOOL_ID"] }'
+```

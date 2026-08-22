@@ -1,0 +1,176 @@
+---
+title: "Example: order status lookup"
+description: "Build an HTTP tool end to end, from endpoint to live call."
+---
+
+The canonical tool. A caller asks "where's my order?", the agent asks for the
+number, calls your API, and reads back the answer.
+
+We'll build the endpoint, define the tool, attach it, and test it.
+
+## 1. The endpoint
+
+Your side. Keep it fast — the agent is holding a live conversation.
+
+```javascript
+// GET /orders/:orderId
+app.get("/orders/:orderId", async (req, res) => {
+  const order = await db.orders.findByNumber(req.params.orderId);
+
+  if (!order) {
+    // A shaped "not found" lets the agent explain. A 404 makes it apologise
+    // vaguely, because it has nothing to say.
+    return res.json({ found: false, reason: "no_such_order" });
+  }
+
+  res.json({
+    found: true,
+    status: order.status,        // "packing" | "shipped" | "delivered"
+    carrier: order.carrier,
+    expectedDate: order.eta,     // "2026-09-03"
+  });
+});
+```
+
+<Tip>
+  Return **facts, not sentences**. Give the agent `{"status":"shipped","expectedDate":"2026-09-03"}`
+  and it phrases that naturally in whatever language the call is in. Return
+  `"Your order shipped on the 3rd"` and your English leaks into a Finnish
+  conversation.
+</Tip>
+
+## 2. Define the tool
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/agent-tools" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "http",
+    "name": "Order status",
+    "modelToolName": "checkOrderStatus",
+    "description": "Look up the status of a customer order. Use this whenever the caller asks where their order is, when it will arrive, or gives an order number.",
+    "httpMethod": "GET",
+    "baseUrlPattern": "https://api.yourcompany.com/orders/{orderId}",
+    "timeout": "5s",
+    "readOnly": true,
+    "dynamicParameters": {
+      "orderId": {
+        "location": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "description": "The customer'\''s order number, usually eight digits"
+        }
+      }
+    }
+  }'
+```
+
+What each choice is doing:
+
+<AccordionGroup>
+  <Accordion title="description — the trigger, not documentation" icon="wand-magic-sparkles">
+    This is the **only** thing the model uses to decide whether to call the tool.
+    Notice it names the phrasings a caller actually uses — "where their order is",
+    "when it will arrive", "gives an order number" — rather than describing the
+    endpoint.
+
+    "Gets order data" would technically be accurate and would fire far less
+    reliably.
+  </Accordion>
+  <Accordion title="location: path — matching the URL" icon="link">
+    `baseUrlPattern` contains `{orderId}`, so the parameter is declared as a
+    `path` parameter and substituted into the URL. Use `query` for filters,
+    `header` for metadata, `body` for structured payloads.
+  </Accordion>
+  <Accordion title="readOnly: true — killing dead air" icon="bolt">
+    A lookup changes nothing, so the runtime may run it **eagerly** while the
+    agent is still speaking and discard the result if the conversation turns
+    elsewhere. That removes a noticeable pause.
+
+    Safe here. Never set it on a booking or a payment.
+  </Accordion>
+  <Accordion title="timeout: 5s — above the default" icon="clock">
+    The default is 2.5s. Database lookups behind a cold connection sometimes
+    exceed that, and a timeout mid-call is worse than a slightly longer pause.
+    The ceiling is 40s.
+  </Accordion>
+  <Accordion title="the parameter description" icon="comment">
+    "usually eight digits" is written **for the model**, and it helps: it lets
+    the agent recognise when a caller has misheard themselves and read back six
+    digits.
+  </Accordion>
+</AccordionGroup>
+
+Save the returned `id`.
+
+## 3. Attach it to your agent
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/agents/AGENT_ID/tools" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "toolIds": ["TOOL_ID"] }'
+```
+
+<Note>
+  `toolIds` is an **array**, and it must not be empty. Tools live at the
+  workspace level, so this same tool can serve every agent you have — fix a bug
+  in it once and they all get the fix.
+</Note>
+
+## 4. Tell the agent it exists
+
+The tool is attached, but the agent's prompt should set expectations:
+
+```json
+{
+  "config": {
+    "customInstructions": "- If the caller asks about an order, ask for their order number and look it up.\n- If the order is not found, offer to take their name and have someone call back.\n- Never guess a delivery date."
+  }
+}
+```
+
+## 5. Test it
+
+Create a browser call and try it:
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/calls/create" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "agentId": "AGENT_ID", "connectionType": "webrtc" }'
+```
+
+Then work through these deliberately:
+
+| Say | Should happen |
+| --- | --- |
+| "Where's my order?" | Agent asks for the number — it cannot call without one |
+| "It's 12345678" | Tool fires; agent reads back the status |
+| "Order 99999999" | `found: false`; agent offers a callback rather than inventing |
+| Give a partial number | Agent asks you to repeat rather than calling with junk |
+
+<Warning>
+  Validate the parameter server-side anyway. `orderId` came from speech
+  recognition — treat it exactly as you would a value typed by an anonymous user.
+</Warning>
+
+## If it does not fire
+
+Almost always the description, not the wiring.
+
+- **Never fires** — name the caller phrasings explicitly in `description`
+- **Fires too eagerly** — add a precondition: *"Only call this once the caller has given an order number."*
+- **Wrong parameter** — tighten the parameter's own `description`
+- **Agent goes quiet** — your endpoint exceeded `timeout`; check your own latency first
+
+<CardGroup cols={2}>
+  <Card title="Add authentication" icon="key" href="/examples/authenticated-tool">
+    When your endpoint needs a credential.
+  </Card>
+  <Card title="Tool reference" icon="wrench" href="/tools/overview">
+    Every option in full.
+  </Card>
+</CardGroup>

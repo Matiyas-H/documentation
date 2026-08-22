@@ -1,0 +1,149 @@
+---
+title: "Inline calls"
+description: "Run a call with configuration in the request — no saved agent."
+---
+
+`POST /calls/inline` takes the whole agent configuration in the request body.
+Nothing is stored, nothing is reused. Use it when the persona is decided at call
+time.
+
+## When this is the right choice
+
+- **Per-user personas** — the prompt is assembled from that user's data
+- **Generated agents** — your product builds the configuration on the fly
+- **Testing** — try a prompt without creating a record you then have to clean up
+- **Stateless architectures** — you hold the config, we hold nothing
+
+If the same configuration is used more than a handful of times, create a real
+[agent](/concepts/agents) instead — you get version history, tool assignment,
+a phone number, and the dashboard.
+
+## Creating one
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/calls/inline" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "systemPrompt": "You are a concise support agent for Northside Clinic.",
+    "voice": "Mark",
+    "language": "en",
+    "model": "llama",
+    "temperature": 0,
+    "firstSpeaker": "agent",
+    "greeting": "Northside Clinic, how can I help?",
+    "recordingEnabled": true
+  }'
+```
+
+Required: `systemPrompt`, `voice`, `language`. The response carries
+`websocketUrl`, exactly as `/calls/create` does.
+
+### Every option
+
+| Field | Notes |
+| --- | --- |
+| `systemPrompt` **·** `voice` **·** `language` | Required |
+| `model` | `gemma` · `llama` (default) · `glm` |
+| `temperature` | 0–1, default 0 |
+| `greeting` | Appended as the opening line when the agent speaks first |
+| `firstSpeaker` | `agent` (default) · `user` |
+| `interruptible` | First message only. Default `false` |
+| `maxDuration` | 60–7200 seconds, default 3000 |
+| `inactivityTimeout` | 10–300 seconds |
+| `inactivityAction` | `hang_up` · `prompt` |
+| `recordingEnabled` | Default `true` |
+| `connectionType` | `twilio` (default) · `telnyx` · `plivo` · `websocket` · `webrtc` |
+| `websocket` | Sample rates, codec, buffering — see [Calls](/concepts/calls#connection-types) |
+| `selectedTools` | See below |
+| `metadata` | Arbitrary values on the call record |
+
+<Note>
+  `systemPrompt` here is the **whole** prompt. There is no `basePrompt` /
+  `context` / `customInstructions` layering — that assembly belongs to saved
+  agents. See [Writing agent prompts](/guides/prompting) for what the layered
+  version produces, if you want to reproduce its structure by hand.
+</Note>
+
+## From the SDK
+
+`joinCall` takes inline options directly:
+
+```javascript
+const session = new OmniaSession({ apiKey: KEY });
+
+await session.joinCall({
+  systemPrompt: buildPromptFor(user),
+  voice: "Mark",
+  language: user.locale,
+  firstSpeaker: "agent",
+});
+```
+
+## Tools
+
+Inline calls accept `selectedTools` in the request. Each entry references one
+of three things, and **exactly one** of them:
+
+| Field | Meaning |
+| --- | --- |
+| `toolId` | A tool already saved in your workspace |
+| `toolName` | A system tool, e.g. `hangUp` |
+| `temporaryTool` | A full tool definition, defined inline for this call only |
+
+```json
+{
+  "systemPrompt": "…",
+  "voice": "Mark",
+  "language": "en",
+  "selectedTools": [
+    { "toolId": "tl_abc123" },
+    { "toolName": "hangUp" },
+    {
+      "temporaryTool": {
+        "modelToolName": "checkStock",
+        "description": "Check whether an item is in stock. Use when the caller asks about availability.",
+        "dynamicParameters": [
+          {
+            "name": "sku",
+            "location": "PARAMETER_LOCATION_QUERY",
+            "schema": { "type": "string", "description": "The item SKU" },
+            "required": true
+          }
+        ],
+        "http": {
+          "baseUrlPattern": "https://api.yourcompany.com/stock",
+          "httpMethod": "GET"
+        }
+      }
+    }
+  ]
+}
+```
+
+<Warning>
+  Setting more than one of `toolId`, `toolName`, or `temporaryTool` on the same
+  entry is rejected with `400`. Pick one per entry.
+</Warning>
+
+## What you give up
+
+| | Saved agent | Inline |
+| --- | --- | --- |
+| Version history | ✅ | ❌ |
+| Phone number | ✅ | ❌ |
+| Dashboard visibility | ✅ | ❌ |
+| Corpora / knowledge | ✅ | ❌ |
+| Config stored | ✅ | ❌ — you own it |
+
+Calls themselves are still recorded and billed identically, and still appear in
+`GET /calls`.
+
+<CardGroup cols={2}>
+  <Card title="Saved agents" icon="robot" href="/concepts/agents">
+    When configuration should persist.
+  </Card>
+  <Card title="Tools" icon="wrench" href="/tools/overview">
+    What `temporaryTool` definitions look like.
+  </Card>
+</CardGroup>

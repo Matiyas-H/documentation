@@ -1,0 +1,129 @@
+---
+title: "Tool parameters"
+description: "The three maps, where values go, and which map to use."
+---
+
+A tool takes values from three different places, and the difference matters for
+security as much as correctness.
+
+<CardGroup cols={3}>
+  <Card title="dynamic" icon="wand-magic-sparkles">
+    **The model fills these in** from the conversation. Untrusted input.
+  </Card>
+  <Card title="static" icon="lock">
+    **Never seen by the model.** Sent on every invocation.
+  </Card>
+  <Card title="automatic" icon="gears">
+    **Filled by the platform.** The live call's ID, for instance.
+  </Card>
+</CardGroup>
+
+## Choosing the right map
+
+The rule of thumb: does this value describe **what the caller wants**, or **who
+is asking**?
+
+```json
+{
+  "dynamicParameters": {
+    "date":     { "location": "body", "required": true,
+                  "schema": { "type": "string", "description": "Appointment date as YYYY-MM-DD" } }
+  },
+  "staticParameters": {
+    "clinicId": { "location": "body", "value": "northside-01" }
+  },
+  "automaticParameters": {
+    "callId":   { "location": "body", "knownValue": "KNOWN_PARAM_CALL_ID" }
+  }
+}
+```
+
+`clinicId` is static deliberately. If it were dynamic, a caller could talk the
+agent into booking at a different clinic. Anything identifying *who is asking* —
+tenant IDs, account scoping, API versions, feature flags — belongs in
+`staticParameters`, where the model can neither see nor invent it.
+
+<Warning>
+  A parameter name may appear in **only one** of the three maps. Reusing a name
+  across two is rejected with `400`, because which value wins would be ambiguous.
+</Warning>
+
+## Dynamic parameters
+
+```json
+{
+  "orderId": {
+    "location": "path",
+    "required": true,
+    "schema": {
+      "type": "string",
+      "description": "The customer's order number, usually eight digits"
+    }
+  }
+}
+```
+
+<ResponseField name="schema.type" type="enum" required>
+  `string`, `number`, `boolean`, `object`, or `array`.
+</ResponseField>
+
+<ResponseField name="schema.description" type="string">
+  Written **for the model**, not for a developer. "The customer's order number,
+  usually eight digits" beats "order identifier" — it lets the agent notice when
+  a caller has misread six digits and ask them to repeat.
+</ResponseField>
+
+<ResponseField name="schema.enum" type="string[]">
+  Constrain to a fixed set. Better than describing the options in prose, because
+  the model cannot drift outside it.
+</ResponseField>
+
+<Warning>
+  Validate every dynamic parameter server-side. These values came from speech
+  recognition — treat them exactly as you would input typed by an anonymous
+  user.
+</Warning>
+
+## Static parameters
+
+Constant values attached to every invocation and never exposed to the model.
+
+```json
+{ "apiVersion": { "location": "header", "value": "2026-08-01" } }
+```
+
+`value` accepts any JSON — string, number, object, array.
+
+## Automatic parameters
+
+Filled by the platform at call time.
+
+```json
+{ "callId": { "location": "body", "knownValue": "KNOWN_PARAM_CALL_ID" } }
+```
+
+`KNOWN_PARAM_CALL_ID` is what makes [long-running tools](/tools/async) possible —
+your worker learns which live call to post a result back into.
+
+## Where the value goes
+
+HTTP tools need a `location` on every parameter. Both the short and canonical
+long forms are accepted; the long form is what reaches the runtime.
+
+| Location | Canonical | Best for |
+| --- | --- | --- |
+| `header` | `PARAMETER_LOCATION_HEADER` | API keys, content types, metadata |
+| `query` | `PARAMETER_LOCATION_QUERY` | Filters, search terms, optional values |
+| `path` | `PARAMETER_LOCATION_PATH` | Resource IDs, via `{placeholders}` in the URL |
+| `body` | `PARAMETER_LOCATION_BODY` | Structured data, several related values |
+
+Path parameters must match a placeholder in `baseUrlPattern`:
+
+```
+https://api.yourcompany.com/orders/{orderId}
+```
+
+<Note>
+  **Client tool parameters have no `location`** — nothing is being placed into an
+  HTTP request. Declare `schema` and `required` only.
+</Note>

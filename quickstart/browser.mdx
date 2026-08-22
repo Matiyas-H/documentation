@@ -1,0 +1,114 @@
+---
+title: "Quickstart: in the browser"
+description: "Talk to an agent from a web page in about five minutes."
+---
+
+<Note>
+  You need an API key from
+  [**API Keys**](https://dashboard.omnia-voice.com/dashboard/api-keys) in the
+  dashboard. Keep it in your environment as `OMNIA_API_KEY`.
+</Note>
+
+<Steps>
+
+<Step title="Pick a language and voice">
+
+```bash
+curl "https://api.omnia-voice.com/api/v1/languages" -H "X-API-Key: $OMNIA_API_KEY"
+curl "https://api.omnia-voice.com/api/v1/voices?languageCode=en" -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+Keep one `languageId` and one `voiceId`. Each voice has a `previewUrl` worth
+listening to.
+
+</Step>
+
+<Step title="Create an agent">
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/agents" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "First agent",
+    "status": "ACTIVE",
+    "config": {
+      "languageId": "LANGUAGE_ID",
+      "voiceId": "VOICE_ID",
+      "greeting": "Hi! What can I help you with?",
+      "basePrompt": "You are a friendly assistant. You are brief and never guess — if you do not know something, say so.",
+      "firstSpeaker": "agent",
+      "temperature": 0
+    }
+  }'
+```
+
+Save the returned `id`.
+
+<Note>
+  You write configuration under `config` and read it back under
+  `standardConfig`. The request and response are not symmetric.
+</Note>
+
+</Step>
+
+<Step title="Create the call — on your server">
+
+```javascript
+// POST /api/voice/start
+const res = await fetch("https://api.omnia-voice.com/api/v1/calls/create", {
+  method: "POST",
+  headers: {
+    "X-API-Key": process.env.OMNIA_API_KEY,   // stays server-side
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ agentId: AGENT_ID, connectionType: "webrtc" }),
+});
+
+const { websocketUrl } = await res.json();
+return Response.json({ websocketUrl });        // only this reaches the browser
+```
+
+<Warning>
+  Do this server-side. An API key in browser JavaScript is readable by anyone
+  who opens devtools, whatever bundler you use.
+</Warning>
+
+</Step>
+
+<Step title="Connect from the browser">
+
+```bash
+npm install @omnia-voice/sdk
+```
+
+```javascript
+import { OmniaSession } from "@omnia-voice/sdk";
+
+const session = new OmniaSession({ apiKey: PLACEHOLDER });
+
+session.addEventListener("transcripts", () => {
+  console.log(session.transcripts.at(-1));
+});
+
+const { websocketUrl } = await (await fetch("/api/voice/start", { method: "POST" })).json();
+await session.joinCall({ websocketUrl });
+```
+
+Start this from a **real click** — browsers deny microphone permission far more
+often on page load, and block audio playback until the user interacts.
+
+</Step>
+
+</Steps>
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Give it tools" icon="wrench" href="/tools/overview">
+    Let it act, not just talk.
+  </Card>
+  <Card title="Drive your UI" icon="browser" href="/examples/browser-agent">
+    Client tools, with a worked example.
+  </Card>
+</CardGroup>

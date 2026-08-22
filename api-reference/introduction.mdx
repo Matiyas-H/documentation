@@ -1,0 +1,91 @@
+---
+title: "API reference"
+description: "Base URL, conventions, and how to read these pages."
+---
+
+```
+https://api.omnia-voice.com/api/v1
+```
+
+Every endpoint is documented in the sidebar with an interactive playground — add
+your API key and send a real request from the page.
+
+<Note>
+  `https://dashboard.omnia-voice.com/api/v1` is an alias for the same service and
+  continues to work. Prefer `api.omnia-voice.com` for new work.
+</Note>
+
+## Conventions
+
+**Authentication** — `X-API-Key` on every request. See
+[Authentication](/authentication).
+
+**Content type** — `application/json` for request bodies.
+
+**Single resources** return the object directly:
+
+```json
+{ "id": "agt_123", "name": "Front Desk", "status": "ACTIVE" }
+```
+
+**Collections** return `data` plus `pagination`:
+
+```json
+{
+  "data": [ ... ],
+  "pagination": { "page": 1, "limit": 20, "total": 45, "hasMore": true }
+}
+```
+
+**Pagination** — most collections use `?page=1&limit=50` (default 50, maximum
+100) and return a `pagination` object.
+
+`/calls` is the exception: it uses **cursor pagination** to match the underlying
+voice provider — `?cursor=...&pageSize=50`. Follow the cursor returned by the
+previous response rather than incrementing a page number.
+
+**Errors** are consistent:
+
+```json
+{ "error": { "message": "Agent not found", "code": "RESOURCE_NOT_FOUND" } }
+```
+
+Full status and code table in [Authentication](/authentication#errors).
+
+**Partial updates** — resources are updated with `PATCH`, not `PUT`. Send only
+the fields you are changing. There are no `PUT` handlers on this API.
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="Agents" icon="robot">
+    Create, configure, and manage voice agents.
+  </Card>
+  <Card title="Calls" icon="phone">
+    Start calls, list them, read transcripts.
+  </Card>
+  <Card title="Tools" icon="wrench">
+    Define what agents can do at `/agent-tools`, and attach it to them.
+  </Card>
+  <Card title="Numbers" icon="hashtag">
+    Manage phone numbers and their agent assignments.
+  </Card>
+  <Card title="Voices & languages" icon="waveform-lines">
+    What is available to speak in.
+  </Card>
+  <Card title="Actions" icon="bolt">
+    Webhook, API, function, and transfer actions.
+  </Card>
+</CardGroup>
+
+## Rate limits
+
+1,000 requests per hour per key. Every response carries `X-RateLimit-Remaining`
+and `X-RateLimit-Reset`; exceeding the limit returns `429`.
+
+Limits apply to API requests, not call minutes — one request can start a
+two-hour conversation.
+
+<Card title="Start here" icon="rocket" href="/quickstart">
+  The quickstart takes you from an API key to a live call in five minutes.
+</Card>

@@ -1,0 +1,89 @@
+---
+title: "Quickstart: answering the phone"
+description: "Point a number at an agent and have it answer."
+---
+
+<Note>
+  Assumes you already have an agent — see the
+  [browser quickstart](/quickstart/browser) for creating one — and a number
+  imported under **Import Numbers** in the dashboard.
+</Note>
+
+<Steps>
+
+<Step title="Attach hangUp first">
+
+```bash
+curl "https://api.omnia-voice.com/api/v1/agent-tools/system" -H "X-API-Key: $OMNIA_API_KEY"
+
+curl -X POST "https://api.omnia-voice.com/api/v1/agents/AGENT_ID/tools" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "toolIds": ["HANGUP_TOOL_ID"] }'
+```
+
+<Warning>
+  Without `hangUp` the agent cannot end a call. It finishes speaking and waits
+  while the caller sits in silence. Do this before the number is live, not after
+  the first complaint.
+</Warning>
+
+</Step>
+
+<Step title="Tune the settings for a phone line">
+
+```bash
+curl -X PATCH "https://api.omnia-voice.com/api/v1/agents/AGENT_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "config": {
+      "firstSpeaker": "agent",
+      "interruptible": false,
+      "maxDuration": 600,
+      "inactivityTimeout": 20,
+      "inactivityAction": "prompt",
+      "recordingEnabled": true
+    },
+    "changeNote": "Tuned for inbound phone"
+  }'
+```
+
+Why: callers expect a greeting; an uninterruptible first message means a
+recording notice is actually heard; ten minutes stops a stuck call burning
+credits; twenty seconds of silence gets a spoken check-in rather than a dead
+line.
+
+</Step>
+
+<Step title="Assign the number">
+
+Assignment is a `PATCH` on the **number**, setting its `agentId`:
+
+```bash
+curl "https://api.omnia-voice.com/api/v1/numbers?status=unassigned" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+
+curl -X PATCH "https://api.omnia-voice.com/api/v1/numbers/NUMBER_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "agentId": "AGENT_ID" }'
+```
+
+Unassign with `{ "agentId": null }`.
+
+</Step>
+
+<Step title="Call it">
+
+Listen for the things a browser test cannot show you: does the greeting still
+sound right at narrowband quality, is there a gap before it speaks, does it cope
+with background noise, does it hang up cleanly.
+
+</Step>
+
+</Steps>
+
+<Card title="Telephony" icon="phone" href="/telephony/overview">
+  Transfers, outbound, and what else changes on a phone call.
+</Card>

@@ -1,0 +1,216 @@
+---
+title: "Example: an authenticated tool"
+description: "Credentials, static parameters, and the call ID — done properly."
+---
+
+Most real tools need a credential. This walks through the whole flow: declaring
+what the credential is, storing its value, and adding the extras your endpoint
+needs but the agent must never see.
+
+## The two halves
+
+Credentials are split deliberately:
+
+| | Field | What it is |
+| --- | --- | --- |
+| **Declaration** | `httpSecurityOptions` | *What kind* of credential and *how* it's sent. Returned by the API. |
+| **Value** | `authTokens` | The secret itself. Encrypted at rest, **never returned**. |
+
+Keeping them apart means you can inspect a tool's auth setup without exposing
+the secret, and rotate the secret without touching the shape.
+
+## Creating it
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v1/agent-tools" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "http",
+    "name": "Book appointment",
+    "modelToolName": "bookAppointment",
+    "description": "Book an appointment. Only call this once you have confirmed the date, the time, and the caller'\''s full name.",
+    "httpMethod": "POST",
+    "baseUrlPattern": "https://api.yourcompany.com/appointments",
+    "timeout": "8s",
+    "agentReaction": "speaks",
+
+    "dynamicParameters": {
+      "date":     { "location": "body", "required": true,
+                    "schema": { "type": "string", "description": "Appointment date as YYYY-MM-DD" } },
+      "time":     { "location": "body", "required": true,
+                    "schema": { "type": "string", "description": "Start time, 24-hour HH:MM" } },
+      "fullName": { "location": "body", "required": true,
+                    "schema": { "type": "string", "description": "The caller'\''s full name" } }
+    },
+
+    "staticParameters": {
+      "clinicId":   { "location": "body",   "value": "northside-01" },
+      "apiVersion": { "location": "header", "value": "2026-08-01" }
+    },
+
+    "automaticParameters": {
+      "callId": { "location": "body", "knownValue": "KNOWN_PARAM_CALL_ID" }
+    },
+
+    "httpSecurityOptions": {
+      "options": [
+        { "requirements": { "bookingKey": { "headerApiKey": { "name": "X-Api-Key" } } } }
+      ]
+    },
+
+    "authTokens": {
+      "bookingKey": "sk_live_abc123"
+    }
+  }'
+```
+
+## The three parameter maps
+
+This is the part worth internalising — each map exists for a different trust level.
+
+<CardGroup cols={3}>
+  <Card title="dynamic" icon="wand-magic-sparkles">
+    **The model fills these in.** Extracted from the conversation. Treat as
+    untrusted input.
+  </Card>
+  <Card title="static" icon="lock">
+    **Never seen by the model.** Sent on every call. For values it has no
+    business knowing or inventing.
+  </Card>
+  <Card title="automatic" icon="gears">
+    **Filled by the platform.** `KNOWN_PARAM_CALL_ID` tells your backend which
+    live call it is being asked about.
+  </Card>
+</CardGroup>
+
+`clinicId` is static for a reason: if it were dynamic, a caller could talk the
+agent into booking at a different clinic. Anything that identifies *who is
+asking* rather than *what they want* belongs in `staticParameters`.
+
+<Warning>
+  A parameter name may appear in **only one** of the three maps. Reusing a name
+  across two is rejected with `400`, because which value wins would be
+  ambiguous.
+</Warning>
+
+## Credential shapes
+
+Declare exactly one per requirement:
+
+<CodeGroup>
+
+```json Header
+{ "requirements": { "bookingKey": { "headerApiKey": { "name": "X-Api-Key" } } } }
+```
+
+```json Query string
+{ "requirements": { "bookingKey": { "queryApiKey": { "name": "api_key" } } } }
+```
+
+```json Bearer token
+{ "requirements": { "bookingKey": { "httpAuth": { "scheme": "Bearer" } } } }
+```
+
+</CodeGroup>
+
+`options` is a list of **acceptable alternatives** — satisfying any one entry is
+enough. That's how you say "either an API key or a bearer token":
+
+```json
+{
+  "options": [
+    { "requirements": { "apiKey":      { "headerApiKey": { "name": "X-Api-Key" } } } },
+    { "requirements": { "bearerToken": { "httpAuth":     { "scheme": "Bearer" } } } }
+  ]
+}
+```
+
+You may then fill only one of them.
+
+## The typo guard
+
+Every key in `authTokens` **must** be declared in
+`httpSecurityOptions.options[].requirements`. Otherwise:
+
+```json
+{ "authTokens": { "bookngKey": "sk_live_abc123" } }
+```
+
+```json
+{ "error": { "message": "authTokens key \"bookngKey\" is not declared in httpSecurityOptions.options[].requirements. Either declare the credential or remove the value.", "code": "BAD_REQUEST" } }
+```
+
+Without that check the typo would save happily, never satisfy the real
+`bookingKey` requirement, and surface weeks later as an unexplained 401 from
+your own endpoint with nothing useful in the logs.
+
+The reverse is not enforced — declaring two alternatives and filling one is
+intentional.
+
+## Checking and rotating
+
+Credential values are never returned. A `GET` shows which slots are filled:
+
+```json
+{
+  "httpSecurityOptions": { "options": [ { "requirements": { "bookingKey": { "headerApiKey": { "name": "X-Api-Key" } } } } ] },
+  "setCredentials": { "bookingKey": true }
+}
+```
+
+Rotate by sending only the new value:
+
+```bash
+curl -X PATCH "https://api.omnia-voice.com/api/v1/agent-tools/TOOL_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "authTokens": { "bookingKey": "sk_live_NEW" } }'
+```
+
+Clear every slot with `"authTokens": null`. The same `null`-clears rule applies
+to `agentReaction`, `httpSecurityOptions`, and `timeout`.
+
+## Your endpoint receives
+
+```json
+POST /appointments
+X-Api-Key: sk_live_abc123
+apiVersion: 2026-08-01
+
+{
+  "date": "2026-09-03",
+  "time": "14:30",
+  "fullName": "Aino Virtanen",
+  "clinicId": "northside-01",
+  "callId": "call_abc123"
+}
+```
+
+Return something the agent can speak:
+
+```json
+{ "confirmed": true, "reference": "NB-4471" }
+```
+
+Or a shaped failure it can work with:
+
+```json
+{ "confirmed": false, "reason": "slot_taken", "alternatives": ["14:00", "15:30"] }
+```
+
+<Warning>
+  `baseUrlPattern` cannot point at an internal address. RFC 1918 ranges,
+  loopback, IPv6 unique-local, and link-local — including the cloud metadata
+  endpoint at `169.254.169.254` — are all rejected. A tool is a URL the model can
+  cause your infrastructure to call, so it cannot be aimed inward.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="Slow endpoints" icon="hourglass" href="/tools/overview">
+    Work that cannot finish in 40 seconds.
+  </Card>
+  <Card title="Full tool reference" icon="wrench" href="/tools/overview">
+    Every option.
+  </Card>
+</CardGroup>

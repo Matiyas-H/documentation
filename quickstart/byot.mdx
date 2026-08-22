@@ -1,0 +1,74 @@
+---
+title: "Quickstart: your own telephony"
+description: "Bridge Twilio, Telnyx, or Plivo to an agent."
+---
+
+Keep your carrier and stream audio to a WebSocket we return.
+
+<Steps>
+
+<Step title="Create a session when a call arrives">
+
+```javascript
+app.post("/voice", async (req, res) => {
+  const { websocketUrl } = await (
+    await fetch("https://api.omnia-voice.com/api/v1/calls/create", {
+      method: "POST",
+      headers: {
+        "X-API-Key": process.env.OMNIA_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ agentId: AGENT_ID, connectionType: "twilio" }),
+    })
+  ).json();
+
+  res.type("text/xml").send(
+    `<?xml version="1.0" encoding="UTF-8"?>
+     <Response><Connect><Stream url="${websocketUrl}" /></Connect></Response>`
+  );
+});
+```
+
+<Warning>
+  `<Connect><Stream>` is **bidirectional**. `<Start><Stream>` is send-only and
+  gives you an agent that hears the caller but cannot answer.
+</Warning>
+
+</Step>
+
+<Step title="Or use your own client">
+
+For a mobile app or custom bridge, pick your own audio parameters:
+
+```json
+{
+  "agentId": "AGENT_ID",
+  "connectionType": "websocket",
+  "websocket": {
+    "inputSampleRate": 16000,
+    "outputSampleRate": 16000,
+    "codec": "pcm"
+  }
+}
+```
+
+<Warning>
+  Both sample rates are **required** when `connectionType` is `websocket` —
+  a hard `400`, not a default.
+</Warning>
+
+</Step>
+
+</Steps>
+
+`telnyx` and `plivo` work identically — set `connectionType` and point that
+provider's media stream at `websocketUrl`.
+
+<CardGroup cols={2}>
+  <Card title="Full BYOT guide" icon="tower-cell" href="/telephony/bring-your-own">
+    Latency, credits, hangup, and the practical notes.
+  </Card>
+  <Card title="WebSocket protocol" icon="plug" href="/voice-sdk/websockets">
+    Message types and audio format.
+  </Card>
+</CardGroup>

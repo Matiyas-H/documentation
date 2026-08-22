@@ -1,0 +1,139 @@
+---
+title: "Omnia Voice"
+description: "Build voice AI agents that answer the phone, use your tools, and speak 50+ languages."
+---
+
+Omnia Voice is a platform for building **voice AI agents** — AI that holds a real
+spoken conversation over the phone or in the browser, calls your APIs mid-call,
+and answers from your own documents.
+
+You configure an agent once — personality, voice, language, tools, knowledge —
+and then reach it however you need: an inbound phone number, an outbound call, a
+widget on your website, or a raw WebSocket from your own application.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Four paths — browser, inbound phone, outbound, or your own telephony.
+  </Card>
+  <Card title="API reference" icon="code" href="/api-reference/introduction">
+    Every endpoint, with an interactive playground.
+  </Card>
+  <Card title="Tools" icon="wrench" href="/tools/overview">
+    Let an agent call your APIs and control the call.
+  </Card>
+  <Card title="Worked examples" icon="lightbulb" href="/examples/clinic-agent">
+    Complete builds, start to finish.
+  </Card>
+</CardGroup>
+
+## What the platform gives you
+
+<CardGroup cols={3}>
+  <Card title="Agents" icon="robot" href="/concepts/agents">
+    Personality, voice, language, call behaviour.
+  </Card>
+  <Card title="Tools" icon="wrench" href="/tools/overview">
+    HTTP, client, and built-in call control.
+  </Card>
+  <Card title="Corpora" icon="books" href="/concepts/corpora">
+    Answer from your own documents.
+  </Card>
+  <Card title="Telephony" icon="phone" href="/telephony/overview">
+    Our numbers, or bring your own carrier.
+  </Card>
+  <Card title="SDKs" icon="js" href="/voice-sdk/overview">
+    JavaScript and React, or raw WebSocket.
+  </Card>
+  <Card title="Transcription" icon="waveform-lines" href="/speech-to-text/overview">
+    Batch or streaming speech to text.
+  </Card>
+</CardGroup>
+
+## What you can build
+
+- **Inbound reception** — answer every call, day or night, in the caller's language
+- **Outbound campaigns** — reminders, follow-ups, qualification calls
+- **In-app voice** — a spoken assistant inside your web product
+- **Transcription pipelines** — batch or real-time speech to text, no agent involved
+
+## Two products, one API
+
+| | What it does | Where it runs |
+| --- | --- | --- |
+| **Voice Agents** | Full spoken conversation: listens, reasons, calls tools, speaks | Phone, browser, WebSocket |
+| **Transcribe** | Audio to text, nothing else | Batch upload or live stream |
+
+Both share the same API key and the same account. Use either on its own, or both
+together.
+
+## How a call works
+
+<Steps>
+  <Step title="You create an agent">
+    An agent bundles a prompt, a voice, a language, call settings, and any tools
+    or knowledge bases it should have access to.
+  </Step>
+  <Step title="Someone reaches it">
+    Through a phone number you have assigned, an outbound call you trigger, the
+    embeddable web widget, or a WebSocket session you open yourself.
+  </Step>
+  <Step title="The agent handles the conversation">
+    It listens, decides what to say, and calls your tools when it needs real
+    data — checking an order, booking a slot, looking something up.
+  </Step>
+  <Step title="You get the record">
+    Transcript, recording, duration, and cost are all available through the API
+    and in the dashboard once the call ends.
+  </Step>
+</Steps>
+
+## Base URL
+
+```
+https://api.omnia-voice.com/api/v1
+```
+
+<Note>
+  `https://dashboard.omnia-voice.com/api/v1` points at the same service and
+  keeps working. New integrations should prefer `api.omnia-voice.com`.
+</Note>
+
+## Your first request
+
+<CodeGroup>
+
+```bash cURL
+curl https://api.omnia-voice.com/api/v1/agents \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+```javascript Node.js
+const res = await fetch("https://api.omnia-voice.com/api/v1/agents", {
+  headers: { "X-API-Key": process.env.OMNIA_API_KEY },
+});
+const { data } = await res.json();
+console.log(data);
+```
+
+```python Python
+import os, requests
+
+res = requests.get(
+    "https://api.omnia-voice.com/api/v1/agents",
+    headers={"X-API-Key": os.environ["OMNIA_API_KEY"]},
+)
+print(res.json()["data"])
+```
+
+</CodeGroup>
+
+## Languages and voices
+
+Agents support **50+ languages**, with particular depth in English and the Nordic
+languages. Language is auto-detected during a call, and an agent can switch
+mid-conversation without being told to.
+
+Fetch what is available for your account with
+[`GET /languages`](/api-reference/introduction) and
+[`GET /voices`](/api-reference/introduction) — you will need a `languageId` and a
+`voiceId` to create an agent.

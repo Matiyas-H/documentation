@@ -1,0 +1,131 @@
+---
+title: "Call transfers"
+description: "Handing a live call to a human."
+---
+
+Some calls should not end with the agent. A transfer moves the caller to a
+person while they stay on the line.
+
+## When to transfer
+
+The best agents are decisive about their own limits. Put the triggers in
+`customInstructions` explicitly:
+
+```text
+- Transfer to a human immediately if the caller mentions pain, bleeding, or an emergency.
+- Transfer if the caller asks twice for a person.
+- Transfer if you cannot answer after one attempt at looking it up.
+- Never attempt to talk someone out of asking for a human.
+```
+
+<Tip>
+  "Never attempt to talk someone out of asking for a human" is worth including
+  verbatim. Without it, agents tend to try one more time to help — which is
+  exactly what makes people furious with phone systems.
+</Tip>
+
+## Building the transfer
+
+Transfers are a tool, not a built-in. What kind depends on your setup:
+
+<Tabs>
+
+<Tab title="HTTP tool">
+
+Your endpoint talks to your telephony provider and bridges the call. Works on
+every call type.
+
+```json
+{
+  "type": "http",
+  "name": "Transfer to human",
+  "modelToolName": "transferToHuman",
+  "description": "Transfer the caller to a human colleague. Use when the caller asks for a person, when the matter is urgent, or when you cannot help.",
+  "httpMethod": "POST",
+  "baseUrlPattern": "https://api.yourcompany.com/transfer",
+  "agentReaction": "listens",
+  "automaticParameters": {
+    "callId": { "location": "body", "knownValue": "KNOWN_PARAM_CALL_ID" }
+  },
+  "dynamicParameters": {
+    "department": {
+      "location": "body",
+      "required": true,
+      "schema": { "type": "string", "enum": ["billing", "support", "clinical"],
+                  "description": "Which team the caller needs" }
+    },
+    "reason": {
+      "location": "body",
+      "required": false,
+      "schema": { "type": "string", "description": "One line on why, for the colleague picking up" }
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Client tool">
+
+If the call runs in your own app, handle the transfer in the client. Browser and
+WebSocket calls only — [never on a phone call](/tools/http-vs-client).
+
+```javascript
+session.registerTool("transferToHuman", async ({ department }) => {
+  const agent = await findAvailableAgent(department);
+  if (!agent) return { result: "none_available" };
+
+  await bridgeToAgent(agent.id);
+  return { result: "transferred", to: agent.name };
+});
+```
+
+</Tab>
+
+</Tabs>
+
+## `agentReaction: "listens"`
+
+This matters more than it looks. The default is `speaks`, which means the agent
+narrates the tool result — so it keeps talking while the caller is being handed
+over, and talks over the colleague who just picked up.
+
+`listens` makes it go quiet after invoking. That is what you want for anything
+that hands off.
+
+## Say what is happening first
+
+Silence during a transfer feels like a dropped call. Have the agent announce it:
+
+```text
+When transferring, tell the caller what you are doing and roughly how long it
+will take before you call the transfer tool.
+```
+
+## Handle the failure
+
+Nobody available is a normal outcome, not an error. Return it as data so the
+agent can offer something else:
+
+```json
+{ "result": "none_available", "nextAvailable": "tomorrow 9am" }
+```
+
+Then in the prompt:
+
+```text
+If no colleague is available, apologise, offer to take a message with a callback
+number, and confirm the details back before ending the call.
+```
+
+<Warning>
+  A transfer that fails silently is the worst outcome available — the caller
+  waits for a human who never arrives, then the line goes dead. Always return a
+  shaped result, and always give the agent a fallback.
+</Warning>
+
+## Give the colleague context
+
+Pass the reason and, if you have it, a summary. Someone picking up a transferred
+call with no context has to make the caller start again — which undoes most of
+the value of having answered quickly in the first place.

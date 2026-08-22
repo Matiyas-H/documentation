@@ -1,0 +1,108 @@
+---
+title: "Long-running tools"
+description: "Work that cannot finish inside the timeout, without dead air."
+---
+
+Tools must return within their `timeout` — **2.5 seconds by default, 40 seconds
+maximum**. Some work genuinely takes longer: a slow third party, a human
+approval, a generated document.
+
+Do not try to stretch the timeout. Use the deferred pattern instead.
+
+## The problem with waiting
+
+A caller hears silence as a broken line. Ten seconds of nothing is long enough
+for most people to say "hello?" and then hang up. Anything that might exceed a
+few seconds needs to acknowledge first and deliver later.
+
+## The pattern
+
+<Steps>
+
+<Step title="Return immediately with a placeholder">
+
+Your webhook answers straight away. The agent says something natural and the
+conversation continues.
+
+```javascript
+app.post("/deep-lookup", async (req, res) => {
+  const { callId, query } = req.body;
+
+  queue.push({ callId, query });        // hand off, do not await
+
+  res.json({ result: "Looking into that now — one moment." });
+});
+```
+
+</Step>
+
+<Step title="Include the call ID">
+
+Add `call_id` as an automatic parameter so your worker knows which live call the
+answer belongs to:
+
+```json
+{
+  "automaticParameters": {
+    "callId": { "location": "body", "knownValue": "KNOWN_PARAM_CALL_ID" }
+  }
+}
+```
+
+</Step>
+
+<Step title="Do the work off the request path">
+
+Your existing queue or worker. Nothing special.
+
+</Step>
+
+<Step title="Inject the result into the live call">
+
+When it completes, post the answer back as though the caller had said it. The
+agent reads it and responds naturally — *"just got that back, your refund was
+approved."*
+
+```javascript
+await postUserTextMessage(callId, "[Tool result] Refund approved, reference 4471.");
+```
+
+</Step>
+
+</Steps>
+
+<Note>
+  Messages can only be injected into a call that is **joined and not yet ended**.
+  Posting to a finished call returns an error — log it for retry rather than
+  dropping it, since the caller may need a follow-up another way.
+</Note>
+
+## Why this over a longer timeout
+
+- The conversation keeps moving; the caller is not stranded
+- The agent can answer other questions while the work runs
+- A slow dependency degrades the answer's timing, not the whole call
+- It needs no new infrastructure — an HTTP tool you already have, plus one call back
+
+## Writing the placeholder
+
+The placeholder is spoken. Make it sound like a person:
+
+| Instead of | Say |
+| --- | --- |
+| "Processing request" | "Let me look into that — one moment." |
+| "Async job queued" | "I'm checking with the team now." |
+| `{"status":"pending"}` | "That'll take a minute, I'll let you know." |
+
+<Tip>
+  Set `agentReaction: "speaks-once"` on the tool if your prompt already tells the
+  agent to announce a lookup. Otherwise it says the filler line, then reads the
+  placeholder, and the caller hears the same thing twice.
+</Tip>
+
+## When not to use it
+
+If the work is fast but *variable* — usually 200ms, occasionally 4s — raise
+`timeout` instead and set `readOnly: true` where safe, so the runtime can run it
+eagerly. The deferred pattern is for work that is reliably slow, not
+occasionally slow.

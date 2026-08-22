@@ -1,0 +1,139 @@
+---
+title: "Streaming transcription"
+description: "Transcribe live audio over a WebSocket, with interim results."
+---
+
+Open a WebSocket, push audio, receive text as it is recognised.
+
+```
+wss://stt.omnia-voice.com/stream
+```
+
+## Authenticating
+
+<Tabs>
+
+<Tab title="Subprotocol (recommended)">
+
+Pass the key as a WebSocket subprotocol. It never appears in a URL, so it stays
+out of proxy and server logs.
+
+```javascript
+const ws = new WebSocket(
+  "wss://stt.omnia-voice.com/stream",
+  ["token", "your_api_key"]
+);
+```
+
+</Tab>
+
+<Tab title="First message (fallback)">
+
+For clients that cannot set subprotocols, authenticate with the first message.
+
+```javascript
+const ws = new WebSocket("wss://stt.omnia-voice.com/stream");
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({ type: "auth", apiKey: "your_api_key" }));
+};
+```
+
+</Tab>
+
+</Tabs>
+
+<Warning>
+  Never do either of these from a browser you do not control — the key is
+  visible to anyone who opens devtools. Stream from your server, or proxy
+  through it.
+</Warning>
+
+## Sending audio
+
+Wait for `ready`, then send **binary** chunks:
+
+- **16 kHz, 16-bit PCM, mono**
+- **20 ms per chunk — 640 bytes**
+
+```javascript
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+
+  if (msg.type === "ready") {
+    startMicrophone();
+  }
+
+  if (msg.type === "transcript") {
+    console.log(msg.isFinal ? "[FINAL]" : "[interim]", msg.transcript);
+  }
+};
+
+// binary frames, not JSON
+ws.send(audioChunk);
+```
+
+## Messages you receive
+
+<ResponseField name="ready" type="object">
+  Authentication succeeded. Start sending audio.
+</ResponseField>
+
+<ResponseField name="transcript" type="object">
+  A result. `transcript` holds the text; `isFinal` says whether it is settled.
+
+  **Interim** results arrive fast and may be revised — good for showing live
+  captions. **Final** results are stable — use those for anything you store or
+  act on.
+</ResponseField>
+
+<ResponseField name="error" type="object">
+  Something went wrong. `message` explains what.
+</ResponseField>
+
+## A complete example
+
+```javascript
+const ws = new WebSocket(
+  "wss://stt.omnia-voice.com/stream",
+  ["token", process.env.OMNIA_API_KEY]
+);
+
+let finalText = "";
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+
+  if (msg.type === "ready") {
+    console.log("ready — streaming");
+  }
+
+  if (msg.type === "transcript") {
+    if (msg.isFinal) {
+      finalText += msg.transcript + " ";
+      render(finalText, "");
+    } else {
+      render(finalText, msg.transcript);   // show the tail as provisional
+    }
+  }
+
+  if (msg.type === "error") {
+    console.error(msg.message);
+  }
+};
+
+ws.onclose = () => console.log("closed:", finalText.trim());
+```
+
+<Tip>
+  Render finals and interims differently — settled text in your normal colour,
+  the interim tail dimmed. Users read a caption that visibly firms up as
+  accurate; one that silently rewrites itself reads as broken.
+</Tip>
+
+## Keeping the stream healthy
+
+- **Send steadily.** Bursting a buffer is worse than a paced 20 ms cadence.
+- **Reconnect on close.** Networks drop; keep the transcript you already
+  finalised and resume.
+- **Close cleanly** when you stop, so the last partial result is flushed.

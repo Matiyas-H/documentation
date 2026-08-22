@@ -1,0 +1,97 @@
+---
+title: "FAQ"
+description: "Short answers to the questions that come up most."
+---
+
+<AccordionGroup>
+
+<Accordion title="My agent will not hang up" icon="phone-slash">
+Attach the `hangUp` [built-in tool](/tools/built-in). Without it the agent
+finishes speaking and waits indefinitely. This is the most common first-agent
+problem.
+</Accordion>
+
+<Accordion title="My tool never fires" icon="wrench">
+Almost always the `description`. It is the only thing the model uses to decide.
+Name the phrasings callers actually use — "asks where their order is", "gives an
+order number" — rather than describing the endpoint. See
+[Tools](/tools/overview).
+
+If it is a **client** tool on a phone agent, it cannot fire at all — there is no
+client on a phone call.
+</Accordion>
+
+<Accordion title="The agent ignores its greeting" icon="comment">
+Check `firstSpeaker`. A `greeting` on a `firstSpeaker: user` agent is silently
+unused, and outbound calls always wait regardless. See
+[Writing agent prompts](/guides/prompting).
+</Accordion>
+
+<Accordion title="Which endpoint updates an agent?" icon="pen">
+`PATCH /agents/{id}`. There is no `PUT` handler — send only the fields you are
+changing.
+</Accordion>
+
+<Accordion title="How do I assign a phone number?" icon="hashtag">
+`PATCH /numbers/{id}` with `{"agentId": "..."}`. `GET /agents/{id}/numbers` is
+read-only; there is no `POST` on it. Unassign with `{"agentId": null}`.
+</Accordion>
+
+<Accordion title="Why is my API key getting 401 on /credits?" icon="key">
+Balance, usage, and subscription endpoints are **dashboard-only** — they
+authenticate with a session, not an API key. Track spend by aggregating
+`GET /calls` instead. See [Credits](/concepts/credits).
+</Accordion>
+
+<Accordion title="Is there a webhook for call events?" icon="bolt">
+No. Call lifecycle events flow inbound from the voice provider to Omnia for
+billing; they are not forwarded on. Poll `GET /calls` with a cursor — a call is
+finished once `endTime` is populated.
+</Accordion>
+
+<Accordion title="Why does /calls paginate differently?" icon="list">
+`/calls` uses cursor pagination (`cursor`, `pageSize`) to match the underlying
+voice provider. Everything else uses `page` and `limit`.
+</Accordion>
+
+<Accordion title="Can I manage corpora through the API?" icon="books">
+Not currently. Corpus creation and source management authenticate with a
+dashboard session. Linking a corpus to an agent **is** available via the API —
+the `corpora` field on the agent payload.
+</Accordion>
+
+<Accordion title="Why was my tool URL rejected?" icon="shield">
+`baseUrlPattern` refuses internal addresses — private ranges, loopback, and
+link-local including the cloud metadata endpoint. A tool is a URL the model can
+cause your infrastructure to call, so it cannot point inward.
+</Accordion>
+
+<Accordion title="Can I put the SDK key in the browser?" icon="browser">
+`OmniaSession` sends your key with `X-API-Key` from wherever it runs — in a
+browser, that key is visible in devtools. Create calls server-side and hand the
+client only the `websocketUrl`, or point `baseUrl` at your own proxy.
+</Accordion>
+
+<Accordion title="Who gets billed?" icon="coins">
+The person who **created the workspace**, for everything that happens in it —
+not the member who made the call, and not the API key holder. See
+[Workspaces](/concepts/workspaces).
+</Accordion>
+
+<Accordion title="Does restoring an old agent version restore everything?" icon="clock-rotate-left">
+No. Snapshots capture personality fields, language, and voice — not tool
+assignments, corpora, or call settings. Restoring brings back the older wording
+with today's everything-else.
+</Accordion>
+
+<Accordion title="What languages are supported?" icon="language">
+50+, with particular depth in English and the Nordic languages. Language is
+auto-detected and an agent can switch mid-conversation. Fetch what your account
+has with `GET /languages`.
+</Accordion>
+
+</AccordionGroup>
+
+<Card title="Still stuck?" icon="life-ring" href="/getting-help">
+  How to get a useful answer quickly.
+</Card>

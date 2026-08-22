@@ -1,0 +1,128 @@
+---
+title: "Authentication"
+description: "Authenticate every request with a workspace API key."
+---
+
+Every request to the Omnia Voice API is authenticated with an API key sent in the
+`X-API-Key` header.
+
+```bash
+curl https://api.omnia-voice.com/api/v1/agents \
+  -H "X-API-Key: ck_prod_your_key_here"
+```
+
+## Creating a key
+
+Generate keys in the dashboard under
+[**API Keys**](https://dashboard.omnia-voice.com/dashboard/api-keys).
+
+<Warning>
+  The key is shown **once**, at creation. Store it immediately in your secret
+  manager — we keep only a hash and cannot recover it for you. If you lose a key,
+  revoke it and create a new one.
+</Warning>
+
+## Keys are scoped to a workspace
+
+A key carries the workspace it was created in. Every request it makes reads and
+writes **only that workspace's** agents, tools, numbers, and calls, and usage is
+billed to that workspace's owner.
+
+If you run separate environments or serve multiple customers, give each its own
+workspace and its own key. That way a key can never reach across the boundary,
+and revoking one has a blast radius of exactly one workspace.
+
+<Note>
+  Keys created before workspaces existed remain scoped to the user who made them
+  and continue to work unchanged.
+</Note>
+
+## Keeping keys safe
+
+<AccordionGroup>
+  <Accordion title="Never ship a key to the browser" icon="triangle-exclamation">
+    An API key in client-side JavaScript is public, no matter how it is bundled.
+    Anyone can read it and spend your credits. Call the Omnia API from your
+    server, and have the browser talk to *your* backend.
+
+    For in-browser voice, your server creates the call and hands the client only
+    the short-lived join URL. See the [Voice SDK](/voice-sdk/overview).
+  </Accordion>
+  <Accordion title="Use environment variables" icon="key">
+    Read the key from the environment rather than committing it:
+
+    ```bash
+    export OMNIA_API_KEY="ck_prod_..."
+    ```
+
+    Add `.env` to `.gitignore`. If a key ever lands in a commit, revoke it — Git
+    history is forever, and scrapers watch public repositories continuously.
+  </Accordion>
+  <Accordion title="Rotate on a schedule" icon="arrows-rotate">
+    Create the replacement first, deploy it, confirm traffic has moved, then
+    revoke the old key. Because keys are independent, this is a zero-downtime
+    change.
+  </Accordion>
+  <Accordion title="One key per service" icon="layer-group">
+    Separate keys per application or environment mean you can revoke one without
+    taking everything else down, and usage attribution stays readable.
+  </Accordion>
+</AccordionGroup>
+
+## Rate limits
+
+Requests are limited to **1,000 per hour per key**. Every response carries the
+current state:
+
+| Header | Meaning |
+| --- | --- |
+| `X-RateLimit-Limit` | Requests permitted per window |
+| `X-RateLimit-Remaining` | Requests left in the current window |
+| `X-RateLimit-Reset` | Unix timestamp when the window resets |
+| `X-Request-Id` | Unique request identifier — include it in support tickets |
+
+Exceeding the limit returns `429`. Back off and retry after the reset time
+rather than retrying immediately.
+
+<Tip>
+  Rate limits apply to API calls, not to call minutes. A single agent can hold a
+  two-hour conversation on one `POST /calls/create` request.
+</Tip>
+
+## Errors
+
+Failures return a consistent JSON body:
+
+```json
+{
+  "error": {
+    "message": "Invalid API key",
+    "code": "UNAUTHORIZED"
+  }
+}
+```
+
+| Status | Code | What it means |
+| --- | --- | --- |
+| `400` | `BAD_REQUEST` | Malformed request. Validation failures may instead carry a specific code such as `INVALID_BODY`, `INVALID_LANGUAGE`, or `INVALID_VOICE` |
+| `401` | `UNAUTHORIZED` / `MISSING_API_KEY` | Missing, malformed, revoked, or expired key |
+| `402` | — | Insufficient credits to start the call |
+| `403` | `FORBIDDEN` | Valid key, but not for this workspace's resource |
+| `404` | `NOT_FOUND` / `RESOURCE_NOT_FOUND` | No such resource, or not visible to this key |
+| `409` | `CONFLICT` | Conflicts with existing state — e.g. a duplicate tool name |
+| `429` | `RATE_LIMIT_EXCEEDED` | Too many requests — check `X-RateLimit-Reset` |
+| `500` | `INTERNAL_ERROR` | Our fault — retry, then contact support with the `X-Request-Id` |
+| `503` | `SERVICE_UNAVAILABLE` | Temporarily unavailable — retry with backoff |
+
+<Note>
+  Codes come from two places: a status-derived default (`BAD_REQUEST`,
+  `NOT_FOUND`, …) and explicit codes thrown by individual handlers
+  (`RESOURCE_NOT_FOUND`, `INVALID_VOICE`, …). Branch on the **HTTP status**,
+  which is stable, and treat `code` as a more specific hint.
+</Note>
+
+<Note>
+  A `404` is also returned when a resource exists but belongs to another
+  workspace. This is deliberate: it prevents a key from confirming that an ID it
+  cannot access exists.
+</Note>

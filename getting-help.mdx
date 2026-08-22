@@ -1,0 +1,81 @@
+---
+title: "Getting help"
+description: "How to get a useful answer quickly."
+---
+
+## Check these first
+
+Most problems fall into a handful of buckets:
+
+<CardGroup cols={2}>
+  <Card title="FAQ" icon="circle-question" href="/faq">
+    The questions that come up most.
+  </Card>
+  <Card title="Tools not firing" icon="wrench" href="/tools/overview">
+    Usually the description, not the wiring.
+  </Card>
+  <Card title="Prompt behaviour" icon="comment" href="/guides/prompting">
+    How the fields become one system prompt.
+  </Card>
+  <Card title="Errors" icon="triangle-exclamation" href="/authentication#errors">
+    Status codes and what they mean.
+  </Card>
+</CardGroup>
+
+## Include these when you ask
+
+The difference between a same-day answer and three rounds of questions:
+
+<ResponseField name="The X-Request-Id" type="header">
+  Every API response carries one. It identifies the exact request in our logs —
+  by far the most useful single thing you can send.
+</ResponseField>
+
+<ResponseField name="The call ID" type="string">
+  For anything that happened during a conversation. It ties to the transcript,
+  duration, and end reason.
+</ResponseField>
+
+<ResponseField name="The agent ID" type="string">
+  So the configuration can be read rather than guessed at.
+</ResponseField>
+
+<ResponseField name="What you expected, and what happened" type="text">
+  Especially the caller's actual words if the agent behaved oddly — the
+  transcript usually explains it.
+</ResponseField>
+
+<Warning>
+  **Never send an API key or a credential value** in a support request, a
+  screenshot, or a shared log. If one has been exposed, revoke it in the
+  dashboard and create a replacement — keys are independent, so nothing else
+  breaks.
+</Warning>
+
+## Narrowing it down yourself
+
+<AccordionGroup>
+  <Accordion title="Is it the agent or the call path?" icon="code-branch">
+    Test the same agent in the browser and on the phone. If it behaves
+    differently, the difference is in the call path — connection type, tools that
+    do not exist on phone calls, or audio quality — rather than the prompt.
+  </Accordion>
+  <Accordion title="Is it the tool or the description?" icon="wrench">
+    Invoke the tool directly from the dashboard's test panel with sample
+    parameters. If it works there but not in a call, the model is not deciding to
+    call it — that is a `description` problem.
+  </Accordion>
+  <Accordion title="Is it your endpoint or ours?" icon="server">
+    Check your own latency and status codes first. An endpoint that exceeds the
+    tool's `timeout` produces an agent that goes quiet mid-sentence, which looks
+    like a platform fault and is not.
+  </Accordion>
+  <Accordion title="Did it work before?" icon="clock-rotate-left">
+    Agent version history shows what changed and when, with your change notes.
+    Compare against the last version that behaved.
+  </Accordion>
+</AccordionGroup>
+
+## Status
+
+Platform status and incident history: [omnia-voice.com](https://www.omnia-voice.com)

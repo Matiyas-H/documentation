@@ -1,0 +1,96 @@
+---
+title: "Overview: Tools"
+description: "What tools are, the three kinds, and how an agent decides to use one."
+---
+
+Without tools an agent can only say what is already in its prompt. With them it
+can look up a real order, book a real slot, control the call, and drive your UI.
+
+A **tool** is a function the agent may call mid-conversation. You describe what
+it does; the model decides when to reach for it.
+
+## The three kinds
+
+<CardGroup cols={3}>
+  <Card title="HTTP" icon="server" href="/tools/http-vs-client">
+    Runs on **your server**. Works on every call type. The workhorse.
+  </Card>
+  <Card title="Client" icon="browser" href="/tools/http-vs-client">
+    Runs in **your app** over WebSocket. Browser and WebSocket calls only.
+  </Card>
+  <Card title="Built-in" icon="phone" href="/tools/built-in">
+    Platform call control — hang up, send touch tones.
+  </Card>
+</CardGroup>
+
+## The description is the trigger
+
+The `description` is the **only** thing the model uses to decide whether to call
+your tool. It is not documentation — it is the trigger condition.
+
+| Instead of | Write |
+| --- | --- |
+| "Gets order data" | "Look up the status of a customer order. Use whenever the caller asks where their order is or gives an order number." |
+| "Booking endpoint" | "Book an appointment once you have confirmed the date, the time, and the caller's name." |
+| "Customer lookup" | "Find a customer by phone number. Call this at the start if the caller is an existing customer." |
+
+Name the phrasings callers actually use. Most "my tool never fires" problems are
+description problems, not wiring problems.
+
+<Tip>
+  Fires too eagerly? Add a precondition — *"Only call this once the caller has
+  given an order number."* Never fires? Name more trigger phrasings.
+</Tip>
+
+## Lifecycle
+
+Tools belong to the **workspace**, and agents borrow them. One tool can serve
+every agent you have — fix a bug once and they all get it.
+
+```bash
+POST   /agent-tools               # define
+GET    /agent-tools?type=http     # list
+GET    /agent-tools/{id}
+PATCH  /agent-tools/{id}          # partial; null clears some fields
+DELETE /agent-tools/{id}
+
+GET    /agent-tools/system        # built-in tools
+
+POST   /agents/{id}/tools         # attach — { "toolIds": ["..."] }
+GET    /agents/{id}/tools
+DELETE /agents/{id}/tools/{toolId}
+```
+
+<Warning>
+  The attach body is **`toolIds`, an array** with at least one entry — not a
+  single `toolId`. Attaching an already-attached tool is a no-op, so the call is
+  safe to repeat.
+</Warning>
+
+<Note>
+  There is also a legacy `/tools` surface on an older auth model that does not
+  support encrypted credentials. Use `/agent-tools` for anything new.
+</Note>
+
+## Naming rules
+
+`modelToolName` is the function name the model sees. It must match
+`^[a-zA-Z][a-zA-Z0-9_]*$` — start with a letter, then letters, numbers, and
+underscores only.
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Parameters" icon="sliders" href="/tools/parameters">
+    The three maps, and which one to use.
+  </Card>
+  <Card title="Authentication" icon="key" href="/tools/authentication">
+    Credentials, safely.
+  </Card>
+  <Card title="Agent responses" icon="comment" href="/tools/agent-responses">
+    What the agent does when a tool returns.
+  </Card>
+  <Card title="Long-running tools" icon="hourglass" href="/tools/async">
+    Work that cannot finish in 40 seconds.
+  </Card>
+</CardGroup>

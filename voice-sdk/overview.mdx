@@ -1,0 +1,204 @@
+---
+title: "JavaScript SDK"
+description: "Add a talking agent to your web app."
+---
+
+```bash
+npm install @omnia-voice/sdk
+```
+
+The SDK handles microphone capture, audio playback, transcripts, and client-side
+tools. It talks to `/calls/create` (saved agent) or `/calls/inline` (config in
+the request) and connects you to the returned WebSocket.
+
+## Basic use
+
+```javascript
+import { OmniaSession } from "@omnia-voice/sdk";
+
+const session = new OmniaSession({ apiKey: OMNIA_API_KEY });
+
+session.addEventListener("status", () => console.log(session.status));
+session.addEventListener("transcripts", () => {
+  const latest = session.transcripts.at(-1);
+  if (latest) render(latest);
+});
+
+const { callId } = await session.joinCall({ agentId: "agt_123" });
+```
+
+## Where the API key goes
+
+<Warning>
+  `OmniaSession` sends your API key directly to the Omnia API with
+  `X-API-Key`. Constructed in a browser with a production key, **that key is
+  visible to anyone who opens devtools.**
+
+  For anything public-facing, run the SDK behind your own server: point
+  `baseUrl` at an endpoint you control that injects the key and forwards to
+  `api.omnia-voice.com`. The SDK ships a minimal proxy under `proxy/` as a
+  starting point.
+
+  Using it directly in the browser is reasonable for internal tools, prototypes,
+  and demos — just not with a key that can spend real credits.
+</Warning>
+
+<ResponseField name="apiKey" type="string" required>
+  Your API key.
+</ResponseField>
+
+<ResponseField name="baseUrl" type="string" default="https://api.omnia-voice.com">
+  Point this at your own proxy to keep the key server-side.
+</ResponseField>
+
+<ResponseField name="enableRealtimeTranscription" type="boolean" default="true">
+  Stream the user's own speech as they talk, arriving with `isFinal: false`.
+</ResponseField>
+
+<ResponseField name="audioContext" type="AudioContext">
+  Supply your own, if you already manage one.
+</ResponseField>
+
+## Joining a call
+
+`joinCall` resolves to `{ callId }` and accepts either shape:
+
+<CodeGroup>
+
+```javascript Saved agent
+await session.joinCall({
+  agentId: "agt_123",
+  metadata: { customerId: "c_9" },
+});
+```
+
+```javascript Inline config
+await session.joinCall({
+  systemPrompt: "You are a concise support agent for Northside Clinic.",
+  voice: "Mark",
+  language: "en",
+  model: "llama",
+  temperature: 0,
+  firstSpeaker: "agent",
+  recordingEnabled: true,
+});
+```
+
+</CodeGroup>
+
+Inline needs no saved agent — useful when the persona is generated per user. See
+[Inline calls](/voice-sdk/inline-calls).
+
+## Controlling the call
+
+```javascript
+session.muteMic();            session.unmuteMic();
+session.toggleMicMute();      // session.isMicMuted
+
+session.muteSpeaker();        session.unmuteSpeaker();
+session.toggleSpeakerMute();  // session.isSpeakerMuted
+
+session.sendText("The customer is on the Pro plan.");
+await session.leaveCall();
+```
+
+<ResponseField name="sendText(text, deferResponse?)" type="method">
+  Inject text as though the user had spoken it. Pass `deferResponse: true` to
+  add context without prompting an immediate reply — useful for feeding in facts
+  mid-call.
+</ResponseField>
+
+<ResponseField name="sendData(obj)" type="method">
+  Send a structured message. Must include a `type`, and the encoded payload must
+  stay under **1024 bytes**.
+</ResponseField>
+
+## Client tools
+
+Register a handler and the agent can call it during the conversation:
+
+```javascript
+session.registerTool("showForm", async (params) => {
+  const result = await showMyForm(params);
+  return result;                       // string, or { result, responseType }
+});
+
+// or several at once
+session.registerTools({
+  showForm: handleForm,
+  highlightProduct: handleHighlight,
+});
+```
+
+The SDK matches invocations to results for you — no invocation IDs to track. See
+[Client tools](/voice-sdk/client-tools).
+
+## Events
+
+| Event | Read from |
+| --- | --- |
+| `status` | `session.status` |
+| `transcripts` | `session.transcripts` |
+| `data_message` | The event itself — cancelable |
+
+## React
+
+```javascript
+import { OmniaVoiceProvider, useOmniaVoice, useTranscripts, useStatus,
+         useMicrophone, useSpeaker } from "@omnia-voice/sdk/react";
+
+function App() {
+  return (
+    <OmniaVoiceProvider config={{ apiKey: KEY }}>
+      <CallPanel />
+    </OmniaVoiceProvider>
+  );
+}
+
+function CallPanel() {
+  const { joinCall, leaveCall } = useOmniaVoice();
+  const transcripts = useTranscripts();
+  const status = useStatus();
+  const { isMuted, toggle } = useMicrophone();
+  useSpeaker();
+  // …
+}
+```
+
+## Requirements
+
+Microphone access needs a **secure context** — HTTPS or `localhost`. It will not
+work on a plain-HTTP staging domain.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Microphone permission denied" icon="microphone-slash">
+    Once denied, the browser will not ask again — the user must clear it in site
+    settings. Ask for permission **on a click**; requesting it on page load is
+    denied far more often, because the user has no idea what it is for yet.
+  </Accordion>
+  <Accordion title="Connection failed" icon="plug-circle-xmark">
+    Confirm the agent is `ACTIVE` and the workspace has credits — an
+    out-of-credit workspace fails at call creation with `402`. WebSocket URLs are
+    short-lived and single-use, so never cache one.
+  </Accordion>
+  <Accordion title="Tools are not firing" icon="wrench">
+    Usually the tool `description`, not the wiring — the model decides from that
+    text alone. Also check the name passed to `registerTool` matches the tool's
+    `modelToolName` exactly.
+  </Accordion>
+  <Accordion title="No audio out" icon="volume-xmark">
+    Browsers block autoplaying audio until the user interacts with the page.
+    Start the call from a real click.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Inline calls" icon="bolt" href="/voice-sdk/inline-calls">
+    Configure an agent per call, with no saved record.
+  </Card>
+  <Card title="Raw WebSocket" icon="plug" href="/voice-sdk/websockets">
+    Skip the SDK and speak the protocol.
+  </Card>
+</CardGroup>

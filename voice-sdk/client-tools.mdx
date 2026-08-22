@@ -1,0 +1,121 @@
+---
+title: "Client tools"
+description: "Let the agent act on your interface during a call."
+---
+
+A **client tool** runs in your application rather than on a server. The agent
+invokes it over the open WebSocket, your code does the work, and you send the
+result back.
+
+Use it when the thing you need is *in the browser*: what the user is looking at,
+what is in their cart, which tab is open — or when you want to change the page in
+response to the conversation.
+
+## HTTP or client?
+
+| Use HTTP when | Use client when |
+| --- | --- |
+| Data lives in your database | Data lives in the browser |
+| The action is a real mutation | The action is a UI change |
+| You need it on phone calls too | Browser or WebSocket calls only |
+| Secrets are involved | No secrets involved |
+
+<Warning>
+  Client tools do not exist on phone calls — there is no client to run them in.
+  An agent that answers a phone number needs HTTP or system tools.
+</Warning>
+
+## Defining one
+
+```json
+{
+  "name": "Highlight product",
+  "modelToolName": "highlightProduct",
+  "description": "Scroll to and highlight a product on the page. Use when the caller asks about a specific item they can see.",
+  "type": "client",
+  "dynamicParameters": {
+    "productId": {
+      "required": true,
+      "schema": { "type": "string", "description": "The product's ID" }
+    }
+  }
+}
+```
+
+No `location` on the parameters — nothing is being placed into an HTTP request.
+
+## Handling one
+
+With the SDK, register a handler by name. Invocation matching, results, and
+errors are handled for you — you never see an `invocationId`:
+
+```javascript
+session.registerTool("highlightProduct", async ({ productId }) => {
+  document
+    .querySelector(`[data-product="${productId}"]`)
+    ?.scrollIntoView({ behavior: "smooth" });
+
+  return { result: "highlighted", responseType: "tool-response" };
+});
+```
+
+Return either a plain string or `{ result, responseType }`. Throwing is reported
+back to the agent as a tool failure, so it can explain and move on rather than
+stalling.
+
+Register several at once:
+
+```javascript
+session.registerTools({
+  highlightProduct: handleHighlight,
+  showForm: handleForm,
+});
+```
+
+<Note>
+  The name you register must match the tool's `modelToolName` exactly. A
+  mismatch is the most common reason a correctly-defined client tool never
+  fires.
+</Note>
+
+### Without the SDK
+
+On a raw WebSocket you handle the exchange yourself. The message types are
+`client_tool_invocation` inbound and `client_tool_result` outbound, matched on
+`invocationId`:
+
+```javascript
+ws.onmessage = async (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.type !== "client_tool_invocation") return;
+
+  try {
+    const result = await run(msg.toolName, msg.parameters);
+    ws.send(JSON.stringify({
+      type: "client_tool_result",
+      invocationId: msg.invocationId,
+      result,
+    }));
+  } catch (err) {
+    // Always answer. Silence leaves the agent waiting mid-sentence.
+    ws.send(JSON.stringify({
+      type: "client_tool_result",
+      invocationId: msg.invocationId,
+      error: err.message,
+    }));
+  }
+};
+```
+
+See the [WebSocket protocol](/voice-sdk/websockets) for the full message list.
+
+## Worth doing
+
+- **Keep them fast.** This runs mid-conversation. Anything slow belongs behind an
+  HTTP tool with the deferred pattern.
+- **Return something the agent can say.** `{ "status": "highlighted", "name": "Blue Kettle" }`
+  lets it confirm naturally. A bare `true` gives it nothing to work with.
+- **Never trust parameters blindly.** They came from speech. Validate an ID
+  before you act on it.
+- **Keep secrets out.** Anything the browser can reach, the user can read. Real
+  credentials belong in an HTTP tool.

@@ -1,0 +1,69 @@
+---
+title: "Overview: Telephony"
+description: "Two ways to put an agent on a phone line."
+---
+
+Voice agents are most useful on an actual phone. There are two routes, and the
+right one depends on whether you already run telephony.
+
+<CardGroup cols={2}>
+  <Card title="Numbers in Omnia" icon="phone" href="/telephony/phone-numbers">
+    Import a number, attach it to an agent, done. Nothing else to build.
+  </Card>
+  <Card title="Bring your own" icon="tower-cell" href="/telephony/bring-your-own">
+    Keep your carrier. Stream audio to a WebSocket we return.
+  </Card>
+</CardGroup>
+
+## Which one
+
+| | Numbers in Omnia | Bring your own |
+| --- | --- | --- |
+| You manage | Nothing | Carrier, webhooks, call control |
+| Setup | One API call | A webhook handler |
+| Call control | Ours | Yours |
+| Right when | You want it working today | You already run telephony, or need control we don't expose |
+
+Most people should start with numbers in Omnia and move later if they need to.
+The agent itself is identical either way — the same prompt, tools, and corpora.
+
+## What changes on a phone call
+
+Worth knowing before you point a number at an agent that tested well in a
+browser.
+
+**Audio is narrowband.** Phone calls carry G.711 at 8 kHz. A voice that sounds
+rich in the browser can sound thin. Always listen to a real call before going
+live.
+
+**Client tools do not work.** There is no client on a phone call. An agent that
+answers a number needs HTTP or [built-in](/tools/built-in) tools — a client tool
+silently never fires.
+
+**`hangUp` becomes essential.** Without it the agent finishes speaking and waits,
+and the caller sits in silence. In a browser they can close the tab; on a phone
+they cannot.
+
+**Callers interrupt, and there is background noise.** Cars, offices, other
+people. Set `interruptible` deliberately and test somewhere noisy.
+
+## Outbound
+
+Both routes support outbound calls. The agent always waits for the callee to
+speak first, whatever the agent's `firstSpeaker` says — they answered the phone,
+so they say hello.
+
+```bash
+POST /calls/outbound
+{ "agentId": "…", "phoneNumber": "+358401234567", "fromNumberId": "…" }
+```
+
+<Warning>
+  Automated outbound calling is regulated, and the rules differ sharply by
+  country — consent, permitted hours, identification, do-not-call registers.
+  Check what applies where you are dialling. This is your obligation.
+</Warning>
+
+## Transfers
+
+An agent can hand a call to a human. See [Call transfers](/telephony/transfers).

@@ -1,0 +1,163 @@
+---
+title: "Writing agent prompts"
+description: "How your four prompt fields become one system prompt, and how to write each."
+---
+
+An agent's personality comes from four fields — `basePrompt`, `greeting`,
+`context`, `customInstructions` — plus `questions`. They are not concatenated
+naively. Understanding the assembly is the difference between an agent that
+holds character and one that drifts.
+
+## What the model actually receives
+
+```text
+[spoken-output rules]                     ← browser and API calls only
+
+{basePrompt}
+
+Instructions for this conversation:
+
+1. Greeting: "{greeting}"                 ← only when the agent speaks first
+2. Caller Number: {callerNumber}          ← inbound phone calls only
+3. Context: {context}
+4. Special Instructions: {customInstructions}
+5. Follow-up Questions: {questions}
+6. Detailed Implementation: [pronunciation guide]
+```
+
+Every numbered line is **omitted entirely when its field is empty**, and the
+numbering closes up — an agent with no `context` does not produce a prompt that
+jumps from 1 to 3.
+
+<Note>
+  **`basePrompt` is not the whole prompt.** On browser and API calls a block of
+  spoken-output rules is prepended, instructing the model to spell out digits,
+  dates, times, and symbols before they reach text-to-speech. Telephony calls
+  omit it. This is why the same agent can phrase numbers differently depending
+  on how you reach it.
+</Note>
+
+## Who speaks first changes the prompt
+
+| Situation | What the agent is told |
+| --- | --- |
+| `firstSpeaker: agent` + `greeting` set | Open with that exact line |
+| `firstSpeaker: user` | Wait; do not greet — they initiated the call |
+| **Outbound call** | Wait; they answered the phone and will speak first |
+
+Outbound **overrides** `firstSpeaker` entirely. You cannot make an agent talk
+first on an outbound call, and you should not want to — talking over someone's
+"hello" is the fastest way to get hung up on.
+
+<Warning>
+  A `greeting` set on a `firstSpeaker: user` agent is silently unused. If your
+  agent seems to ignore its greeting, check who is configured to speak first.
+</Warning>
+
+## Field by field
+
+### `basePrompt` — identity
+
+Who the agent is. Role, tone, and above all its boundaries.
+
+```text
+You are Mia, the receptionist at Northside Dental. You are warm, brief, and
+never guess. If you don't know something, say so and offer to take a message.
+You do not give clinical advice under any circumstances.
+```
+
+<Tip>
+  The highest-value sentence you can write is a refusal. *"If you don't know
+  something, say so."* Without it, an agent under pressure invents an answer —
+  and on a phone call nobody can see it happening.
+</Tip>
+
+If `basePrompt` is empty the agent falls back to a generic "You are an AI
+assistant." Never ship that.
+
+### `greeting` — the opening line
+
+Spoken **verbatim**, not paraphrased. Write it as speech:
+
+```text
+Northside Dental, this is Mia. How can I help?
+```
+
+Keep it under about fifteen words. Callers interrupt long greetings, and by
+default the first message is uninterruptible — so a long greeting is one the
+caller has to sit through.
+
+<Note>
+  If you need a recording notice, put it here. `interruptible: false` guarantees
+  it is actually heard.
+</Note>
+
+### `context` — the facts
+
+Background the agent can state. Stable, specific, short.
+
+```text
+Open 8am-6pm weekdays, closed weekends. 12 Harbour Road.
+Dr. Chen does implants; Dr. Patel does orthodontics.
+```
+
+Anything long, numerous, or frequently changing belongs in a
+[corpus](/concepts/corpora) instead — not because it will not fit, but because
+prompt facts go stale silently while indexed documents can be updated in one
+place.
+
+### `customInstructions` — the rules
+
+What the agent must always or never do. Imperatives, one per line.
+
+```text
+- Always confirm the caller's name and a callback number before ending.
+- Never quote prices — offer to have someone call back.
+- Escalate anything involving pain or bleeding to a human immediately.
+```
+
+### `questions` — what to find out
+
+Information the agent should work toward gathering. Guidance, not a script — it
+will not interrogate.
+
+## Why the layering matters
+
+It is tempting to put everything in `basePrompt`. Resist it.
+
+Identity and facts serve different purposes. Mixed together, the model cannot
+tell which parts are its character — permanent — and which are merely true this
+month. That is what produces an agent which slowly stops sounding like itself,
+or which defends a stale opening hour as though it were a personality trait.
+
+Keeping them separate also means updating a price does not risk rewriting the
+personality.
+
+## Testing
+
+Test in the **language the agent will actually speak**. An agent that performs
+well in English can behave differently in Finnish or Spanish — different
+phrasing, different pacing, different failure modes.
+
+Then try to break it:
+
+- Ask something it cannot know — does it admit that, or invent?
+- Interrupt mid-sentence — does it recover?
+- Go silent — does the inactivity handling feel natural?
+- Go off-topic — does it come back gracefully?
+- Ask it to do something it must refuse — does the boundary hold?
+
+<Tip>
+  Change one field at a time and write a `changeNote` saying why. Six weeks
+  later "made it friendlier" tells you nothing; "callers said it rushed them"
+  tells you everything. See [versioning](/concepts/agents#versioning).
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Build an agent" icon="robot" href="/guides/creating-agents">
+    The full setup walkthrough.
+  </Card>
+  <Card title="Call behaviour" icon="sliders" href="/concepts/calls">
+    Interruptions, silence, duration, who speaks first.
+  </Card>
+</CardGroup>

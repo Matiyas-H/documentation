@@ -1,0 +1,104 @@
+---
+title: "HTTP vs client tools"
+description: "Which kind to build, and why it is not always obvious."
+---
+
+Both let an agent do something. They differ in **where the code runs**.
+
+| | HTTP | Client |
+| --- | --- | --- |
+| Runs on | Your server | Your app, over WebSocket |
+| Works on | Every call type | Browser and WebSocket only |
+| Latency | Server round-trip | No round-trip |
+| Timeout | 2.5s default, 40s max | None enforced |
+| Secrets | Safe — server-side | Never — the user can read them |
+| Good for | Data, mutations, integrations | UI changes, local state |
+
+## Decide with these questions
+
+**Does it need a secret?** → HTTP. Anything the browser can reach, the user can
+read.
+
+**Will this agent ever answer a phone?** → HTTP. There is no client on a phone
+call, so a client tool simply never fires.
+
+**Is the thing you need only in the browser?** → Client. What the user is
+looking at, what is in their cart, which tab is open.
+
+**Is it a real mutation?** → HTTP. Bookings and payments should not depend on a
+browser tab staying open.
+
+<Warning>
+  The most common mistake is building a client tool for an agent that later gets
+  a phone number. It works perfectly in testing and silently does nothing in
+  production. If in doubt, build HTTP.
+</Warning>
+
+## HTTP tools
+
+```json
+{
+  "type": "http",
+  "name": "Check order",
+  "modelToolName": "checkOrderStatus",
+  "description": "Look up an order. Use when the caller asks where their order is.",
+  "httpMethod": "GET",
+  "baseUrlPattern": "https://api.yourcompany.com/orders/{orderId}",
+  "timeout": "5s",
+  "dynamicParameters": {
+    "orderId": { "location": "path", "required": true,
+                 "schema": { "type": "string", "description": "The order number" } }
+  }
+}
+```
+
+<Warning>
+  **Internal addresses are rejected.** RFC 1918 ranges, loopback, IPv6
+  unique-local, and link-local — including the cloud metadata endpoint at
+  `169.254.169.254` — all fail validation.
+
+  A tool is a URL the model can cause your infrastructure to call, so it cannot
+  be aimed inward.
+</Warning>
+
+## Client tools
+
+No URL and no `location` on parameters — nothing is being placed into an HTTP
+request.
+
+```json
+{
+  "type": "client",
+  "name": "Show product",
+  "modelToolName": "showProduct",
+  "description": "Scroll to and highlight a product. Use when the caller asks to see a specific item.",
+  "dynamicParameters": {
+    "productId": { "required": true,
+                   "schema": { "type": "string", "description": "The product SKU" } }
+  }
+}
+```
+
+Then register a handler:
+
+```javascript
+session.registerTool("showProduct", async ({ productId }) => {
+  document.querySelector(`[data-product="${productId}"]`)
+    ?.scrollIntoView({ behavior: "smooth" });
+  return { result: "shown" };
+});
+```
+
+<Note>
+  The registered name must match `modelToolName` **exactly**. A mismatch is the
+  most common reason a correctly-defined client tool never fires.
+</Note>
+
+See [Client tools](/voice-sdk/client-tools) for the protocol, with and without
+the SDK.
+
+## Using both
+
+Nothing stops you. A retail agent might use an HTTP tool to check real stock and
+a client tool to highlight the item on screen — the same conversation, one fact
+from your database and one action in the browser.
