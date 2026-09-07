@@ -1,0 +1,532 @@
+openapi: 3.0.0
+info:
+  title: Omnia Speech-to-Text API
+  description: |
+    Standalone transcription. Send audio in, get text back — no agent involved.
+
+    Three modes:
+    - `POST /transcribe` — files up to 60 seconds, synchronous.
+    - `POST /batch` — long audio up to 8 hours, asynchronous with polling.
+    - `wss://stt.omnia-voice.com/stream` and `/v2/stream` — live audio. WebSocket
+      endpoints are documented on the [Streaming protocol](/api-reference/speech-to-text/streaming) page.
+
+    Authenticate with your Omnia API key in the `X-API-Key` header.
+  version: 2.1.0
+  contact:
+    email: support@omnia-voice.com
+servers:
+  - url: https://stt.omnia-voice.com
+    description: Production
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Transcription
+    description: File and long-audio transcription
+  - name: Languages
+    description: Supported languages
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Your Omnia API key (`om_…` or `ck_…`)
+
+  parameters:
+    Languages:
+      name: X-Languages
+      in: header
+      required: false
+      schema:
+        type: string
+        example: fi-FI,sv-SE
+      description: |
+        Comma-separated BCP-47 codes (up to 10), or `auto` on its own to detect the
+        language. Defaults to `fi-FI,sv-SE`. Also accepted as `?languages=`.
+        See `GET /languages` for supported codes.
+    Metadata:
+      name: X-Metadata
+      in: header
+      required: false
+      schema:
+        type: string
+        example: '{"callId": "abc-123"}'
+      description: JSON passed through unchanged to usage webhooks.
+    OperationId:
+      name: operationId
+      in: path
+      required: true
+      schema:
+        type: string
+        example: batch_a1b2c3d4-0000-0000-0000-000000000000
+
+  schemas:
+    Segment:
+      type: object
+      properties:
+        transcript:
+          type: string
+        confidence:
+          type: number
+          description: Not populated by the engine; always 0.
+        language:
+          type: string
+          description: Detected language of this segment (BCP-47).
+          example: fi-FI
+        isFinal:
+          type: boolean
+    SpeakerTurn:
+      type: object
+      properties:
+        speaker:
+          type: string
+          description: Speaker number, in order of first appearance.
+          example: "1"
+        transcript:
+          type: string
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Human-readable description.
+        message:
+          type: string
+          description: Same text as `error`.
+        code:
+          type: string
+          description: Machine-readable code.
+          example: INVALID_API_KEY
+    LanguageInfo:
+      type: object
+      properties:
+        code:
+          type: string
+          example: et-EE
+        name:
+          type: string
+          example: Estonian
+        status:
+          type: string
+          enum: [stable, preview]
+          description: "`stable` is generally available; `preview` is experimental quality."
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadRequest:
+      description: Invalid option or empty audio
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+paths:
+  /transcribe:
+    post:
+      summary: Transcribe a file
+      description: |
+        Synchronous transcription for audio up to **60 seconds** and **10 MB**.
+        The transcript comes back in the response. For longer audio use `POST /batch`.
+
+        Send the raw file bytes as the body with the matching `Content-Type`:
+        `audio/mpeg` (MP3), `audio/wav`, `audio/flac`, `audio/ogg` (Opus),
+        `audio/webm` (Opus), or `audio/x-raw` (16-bit 16 kHz mono PCM).
+      operationId: transcribeFile
+      tags: [Transcription]
+      parameters:
+        - $ref: '#/components/parameters/Languages'
+        - $ref: '#/components/parameters/Metadata'
+      requestBody:
+        required: true
+        content:
+          audio/mpeg:
+            schema:
+              type: string
+              format: binary
+          audio/wav:
+            schema:
+              type: string
+              format: binary
+          audio/flac:
+            schema:
+              type: string
+              format: binary
+          audio/ogg:
+            schema:
+              type: string
+              format: binary
+          audio/webm:
+            schema:
+              type: string
+              format: binary
+          audio/x-raw:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Transcription result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transcript:
+                    type: string
+                    description: The full text.
+                  segments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Segment'
+                  audioSize:
+                    type: integer
+                    description: Bytes received.
+                  estimatedDurationMs:
+                    type: integer
+                    description: Audio length in milliseconds. This is what you are billed on.
+                  processingTime:
+                    type: integer
+                    description: Recognition time in milliseconds.
+                  sessionId:
+                    type: string
+                    example: stt_1788786506604_8fd6cc541a02b620
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: File larger than 10 MB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /batch:
+    post:
+      summary: Start a long-audio transcription
+      description: |
+        Asynchronous transcription for audio up to **8 hours** and **500 MB**:
+        meetings, call recordings, podcasts. Returns an operation to poll with
+        `GET /batch/{operationId}`.
+
+        Accepts the same formats as `/transcribe` plus `audio/mp4` (M4A / AAC).
+
+        **Speaker diarization.** Add `X-Diarization: true`, or `minSpeakers,maxSpeakers`
+        such as `2,4`, to get a `speakerTurns` array on the result. Diarization requires
+        `X-Languages: auto` or explicit codes from:
+        `cmn-Hans-CN, de-DE, en-GB, en-IN, en-US, es-ES, es-US, fr-CA, fr-FR, hi-IN, it-IT, ja-JP, ko-KR, pt-BR`.
+
+        Direct uploads are capped at about 32 MB by the platform. For larger files use
+        the signed-URL flow: `POST /batch/init`, `PUT` the audio to the returned URL,
+        then `POST /batch/{operationId}/start`.
+      operationId: startBatch
+      tags: [Transcription]
+      parameters:
+        - $ref: '#/components/parameters/Languages'
+        - $ref: '#/components/parameters/Metadata'
+        - name: X-Diarization
+          in: header
+          required: false
+          schema:
+            type: string
+            example: "true"
+          description: "`true`, or `minSpeakers,maxSpeakers` (1–20, e.g. `2,4`)."
+      requestBody:
+        required: true
+        content:
+          audio/mpeg:
+            schema:
+              type: string
+              format: binary
+          audio/mp4:
+            schema:
+              type: string
+              format: binary
+          audio/wav:
+            schema:
+              type: string
+              format: binary
+          audio/flac:
+            schema:
+              type: string
+              format: binary
+          audio/ogg:
+            schema:
+              type: string
+              format: binary
+          audio/webm:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '202':
+          description: Operation started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operationId:
+                    type: string
+                  status:
+                    type: string
+                    enum: [processing]
+                  pollUrl:
+                    type: string
+                    example: /batch/batch_a1b2c3d4-…
+                  audioBytes:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: File larger than 500 MB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /batch/init:
+    post:
+      summary: Start a large-file upload
+      description: |
+        First step of the signed-URL flow for files over ~32 MB. Takes the same option
+        headers as `POST /batch` plus `X-Content-Type` with the audio MIME type (the
+        request itself has no body). Returns an `uploadUrl` to `PUT` the audio to
+        directly — no API key needed on that request, and it works from browsers.
+        Then call `POST /batch/{operationId}/start`.
+      operationId: initBatchUpload
+      tags: [Transcription]
+      parameters:
+        - $ref: '#/components/parameters/Languages'
+        - $ref: '#/components/parameters/Metadata'
+        - name: X-Content-Type
+          in: header
+          required: true
+          schema:
+            type: string
+            example: audio/mp4
+          description: MIME type of the file you will upload. The `PUT` must send the same `Content-Type`.
+        - name: X-Diarization
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Upload URL issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operationId:
+                    type: string
+                  uploadUrl:
+                    type: string
+                  uploadMethod:
+                    type: string
+                    example: PUT
+                  uploadContentType:
+                    type: string
+                  expiresInSeconds:
+                    type: integer
+                    example: 3600
+                  startUrl:
+                    type: string
+                  pollUrl:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /batch/{operationId}/start:
+    post:
+      summary: Begin recognition after upload
+      description: |
+        Second step of the signed-URL flow. Call once the `PUT` to `uploadUrl` has
+        completed. Idempotent — calling it again returns the current status.
+      operationId: startBatchAfterUpload
+      tags: [Transcription]
+      parameters:
+        - $ref: '#/components/parameters/OperationId'
+      responses:
+        '202':
+          description: Operation started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operationId:
+                    type: string
+                  status:
+                    type: string
+                  pollUrl:
+                    type: string
+                  audioBytes:
+                    type: integer
+        '400':
+          description: No file uploaded yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Unknown operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /batch/{operationId}:
+    get:
+      summary: Poll a long-audio transcription
+      description: |
+        Poll every 10–30 seconds until `status` is `completed`. Use the same API key
+        that started the operation. Results are kept for 24 hours.
+      operationId: getBatch
+      tags: [Transcription]
+      parameters:
+        - $ref: '#/components/parameters/OperationId'
+      responses:
+        '200':
+          description: Current state of the operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operationId:
+                    type: string
+                  status:
+                    type: string
+                    enum: [awaiting_upload, processing, completed, error]
+                  progressPercent:
+                    type: integer
+                    description: While processing.
+                  transcript:
+                    type: string
+                    description: When completed.
+                  segments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Segment'
+                  speakerTurns:
+                    type: array
+                    description: When completed with diarization.
+                    items:
+                      $ref: '#/components/schemas/SpeakerTurn'
+                  audioBytes:
+                    type: integer
+                  durationMs:
+                    type: integer
+                    description: Billed audio duration in milliseconds.
+                  sessionId:
+                    type: string
+                  error:
+                    type: string
+                    description: When status is `error`.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /languages:
+    get:
+      summary: List supported languages
+      description: |
+        Supported BCP-47 codes per engine, with a `stable` or `preview` status.
+        No authentication required.
+
+        `v1` covers `/transcribe`, `/batch` and `/stream`. `v2` covers `/v2/stream`.
+        On v1 the `languages` option restricts recognition to the codes you pass; on
+        v2 it biases recognition toward them while detection stays automatic.
+      operationId: listSttLanguages
+      tags: [Languages]
+      security: []
+      parameters:
+        - name: engine
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [v1, v2]
+          description: Limit to one engine. Default both.
+        - name: codes
+          in: query
+          required: false
+          schema:
+            type: string
+            example: et-EE,ru-RU
+          description: Comma-separated codes to check. Returns support and status per engine instead of the full list.
+      responses:
+        '200':
+          description: Language catalogue, or a per-code check when `codes` is given
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    title: Catalogue
+                    properties:
+                      maxPerRequest:
+                        type: integer
+                        example: 10
+                      engines:
+                        type: object
+                        additionalProperties:
+                          type: object
+                          properties:
+                            endpoints:
+                              type: array
+                              items:
+                                type: string
+                            default:
+                              type: array
+                              items:
+                                type: string
+                            languageOption:
+                              type: string
+                            count:
+                              type: integer
+                            languages:
+                              type: array
+                              items:
+                                $ref: '#/components/schemas/LanguageInfo'
+                  - type: object
+                    title: Code check
+                    properties:
+                      codes:
+                        type: array
+                        items:
+                          type: string
+                      maxPerRequest:
+                        type: integer
+                      engines:
+                        type: object
+                        additionalProperties:
+                          type: object
+                          additionalProperties:
+                            type: object
+                            properties:
+                              supported:
+                                type: boolean
+                              status:
+                                type: string
+                              name:
+                                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'

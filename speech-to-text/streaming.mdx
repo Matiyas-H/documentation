@@ -5,9 +5,16 @@ description: "Transcribe live audio over a WebSocket, with interim results."
 
 Open a WebSocket, push audio, receive text as it is recognised.
 
-```
-wss://stt.omnia-voice.com/stream
-```
+There are two streaming endpoints. They speak the same protocol — same
+authentication, same audio, same messages — so switching is a URL change.
+
+| Endpoint | Engine | Default languages |
+| --- | --- | --- |
+| `wss://stt.omnia-voice.com/stream` | Standard | `fi-FI`, `sv-SE` |
+| `wss://stt.omnia-voice.com/v2/stream` | Next-generation (preview) | auto-detect |
+
+See [Which endpoint should I use?](#which-endpoint-should-i-use) for the
+differences.
 
 ## Authenticating
 
@@ -16,11 +23,11 @@ wss://stt.omnia-voice.com/stream
 <Tab title="Subprotocol (recommended)">
 
 Pass the key as a WebSocket subprotocol. It never appears in a URL, so it stays
-out of proxy and server logs.
+out of proxy and server logs. Options such as languages go in the query string.
 
 ```javascript
 const ws = new WebSocket(
-  "wss://stt.omnia-voice.com/stream",
+  "wss://stt.omnia-voice.com/stream?languages=fi-FI,en-US",
   ["token", "your_api_key"]
 );
 ```
@@ -29,13 +36,19 @@ const ws = new WebSocket(
 
 <Tab title="First message (fallback)">
 
-For clients that cannot set subprotocols, authenticate with the first message.
+For clients that cannot set subprotocols, or when you want to attach metadata,
+authenticate with the first message. You have 30 seconds after connecting.
 
 ```javascript
 const ws = new WebSocket("wss://stt.omnia-voice.com/stream");
 
 ws.onopen = () => {
-  ws.send(JSON.stringify({ type: "auth", apiKey: "your_api_key" }));
+  ws.send(JSON.stringify({
+    type: "auth",
+    apiKey: "your_api_key",
+    languages: ["fi-FI", "en-US"],       // optional
+    metadata: { callId: "abc-123" },      // optional, passed to usage webhooks
+  }));
 };
 ```
 
@@ -49,11 +62,35 @@ ws.onopen = () => {
   through it.
 </Warning>
 
+## Languages
+
+Pass BCP-47 codes, up to 10, either as `?languages=` on the URL or as the
+`languages` array in the auth message. The auth message wins if both are set.
+Pass `auto` on its own to detect the language automatically.
+
+The option behaves differently on the two endpoints:
+
+- On `/stream` it **restricts** recognition to the codes you pass.
+- On `/v2/stream` it **biases** recognition toward them. The engine still
+  follows a speaker who switches to another language mid-call.
+
+To check which codes are supported, and how stable each one is, call
+[`GET /languages`](/speech-to-text/overview#supported-languages):
+
+```
+GET https://stt.omnia-voice.com/languages?codes=et-EE,ru-RU
+```
+
+<Tip>
+  On `/v2/stream`, pass the languages you expect even though it can auto-detect.
+  Without a hint the first few seconds of a call are noticeably less accurate.
+</Tip>
+
 ## Sending audio
 
 Wait for `ready`, then send **binary** chunks:
 
-- **16 kHz, 16-bit PCM, mono**
+- **16 kHz, 16-bit signed PCM, mono** — no WAV header, no compression
 - **20 ms per chunk — 640 bytes**
 
 ```javascript
@@ -73,39 +110,83 @@ ws.onmessage = (event) => {
 ws.send(audioChunk);
 ```
 
+To convert a file for testing: `ffmpeg -i in.mp3 -ac 1 -ar 16000 -f s16le out.pcm`
+
+## Ending the stream
+
+When the speaker is done, send an `end` message and keep the socket open until
+the last final result arrives — usually well under a second. Closing the socket
+immediately can lose the final utterance, especially on `/v2/stream`.
+
+```javascript
+ws.send(JSON.stringify({ type: "end" }));
+setTimeout(() => ws.close(), 2000);
+```
+
 ## Messages you receive
 
 <ResponseField name="ready" type="object">
   Authentication succeeded. Start sending audio.
+
+  ```json
+  {
+    "type": "ready",
+    "sessionId": "stt_1788786506604_8fd6cc541a02b620",
+    "languages": ["fi-FI", "sv-SE"],
+    "audio_format": { "sample_rate": 16000, "channels": 1, "chunk_size_bytes": 640, "chunk_interval_ms": 20 }
+  }
+  ```
+
+  `languages` echoes what the engine was configured with, so you can confirm
+  your option was applied.
 </ResponseField>
 
 <ResponseField name="transcript" type="object">
   A result. `transcript` holds the text; `isFinal` says whether it is settled.
 
+  ```json
+  { "type": "transcript", "transcript": "Moi, Kati tässä.", "isFinal": true, "confidence": 0, "language": "fi-FI" }
+  ```
+
   **Interim** results arrive fast and may be revised — good for showing live
   captions. **Final** results are stable — use those for anything you store or
   act on.
+
+  `language` is the detected language of that result on `/stream`; it is empty
+  on `/v2/stream`. `confidence` is always `0` on interims and on `/v2/stream`.
 </ResponseField>
 
 <ResponseField name="error" type="object">
-  Something went wrong. `message` explains what.
+  Something went wrong. `error` explains what; `code` is machine-readable.
+
+  ```json
+  { "type": "error", "error": "Invalid API key", "code": "INVALID_API_KEY" }
+  ```
 </ResponseField>
 
 ## A complete example
 
-```javascript
+<CodeGroup>
+
+```javascript Node.js
+import WebSocket from "ws";
+import fs from "node:fs";
+
+const pcm = fs.readFileSync("out.pcm");   // 16 kHz, 16-bit, mono
+
 const ws = new WebSocket(
-  "wss://stt.omnia-voice.com/stream",
+  "wss://stt.omnia-voice.com/v2/stream?languages=fi-FI,sv-SE",
   ["token", process.env.OMNIA_API_KEY]
 );
 
 let finalText = "";
 
-ws.onmessage = (event) => {
-  const msg = JSON.parse(event.data);
+ws.on("message", (data) => {
+  const msg = JSON.parse(data);
 
   if (msg.type === "ready") {
-    console.log("ready — streaming");
+    console.log("ready — streaming", msg.languages);
+    stream();
   }
 
   if (msg.type === "transcript") {
@@ -118,12 +199,58 @@ ws.onmessage = (event) => {
   }
 
   if (msg.type === "error") {
-    console.error(msg.message);
+    console.error(msg.error, msg.code);
   }
-};
+});
 
-ws.onclose = () => console.log("closed:", finalText.trim());
+ws.on("close", () => console.log("closed:", finalText.trim()));
+
+async function stream() {
+  for (let i = 0; i < pcm.length; i += 640) {
+    ws.send(pcm.subarray(i, i + 640));
+    await new Promise((r) => setTimeout(r, 20));   // real-time pacing
+  }
+  ws.send(JSON.stringify({ type: "end" }));
+  setTimeout(() => ws.close(), 2000);
+}
 ```
+
+```python Python
+import asyncio, json, os, websockets
+
+URL = "wss://stt.omnia-voice.com/v2/stream?languages=fi-FI,sv-SE"
+
+async def main():
+    pcm = open("out.pcm", "rb").read()   # 16 kHz, 16-bit, mono
+    final_text = ""
+
+    async with websockets.connect(URL, subprotocols=["token", os.environ["OMNIA_API_KEY"]]) as ws:
+        async def stream():
+            for i in range(0, len(pcm), 640):
+                await ws.send(pcm[i:i + 640])
+                await asyncio.sleep(0.02)   # real-time pacing
+            await ws.send(json.dumps({"type": "end"}))
+            await asyncio.sleep(2)
+            await ws.close()
+
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg["type"] == "ready":
+                print("ready — streaming", msg["languages"])
+                asyncio.create_task(stream())
+            elif msg["type"] == "transcript":
+                if msg["isFinal"]:
+                    final_text += msg["transcript"] + " "
+                print("[FINAL]" if msg["isFinal"] else "[interim]", msg["transcript"])
+            elif msg["type"] == "error":
+                print("error:", msg["error"], msg.get("code"))
+
+    print("closed:", final_text.strip())
+
+asyncio.run(main())
+```
+
+</CodeGroup>
 
 <Tip>
   Render finals and interims differently — settled text in your normal colour,
@@ -131,9 +258,31 @@ ws.onclose = () => console.log("closed:", finalText.trim());
   accurate; one that silently rewrites itself reads as broken.
 </Tip>
 
+## Which endpoint should I use?
+
+Both take the same audio and return the same messages. The difference is the
+recognition engine behind them.
+
+**`/stream`** is the standard engine. It is generally available, finalises
+phrases quickly, and tags every result with the detected language. The
+`languages` option is a hard filter. Use it when you need stable, predictable
+behaviour and per-result language codes.
+
+**`/v2/stream`** is the next-generation engine, currently in preview. It streams
+interim text continuously, roughly twice a second, so captions feel much more
+responsive. It produces cleaner, more sentence-like finals and handles callers
+who switch language mid-conversation. The `languages` option is a hint, not a
+filter. It does not return per-result language codes or confidence scores, and
+without a language hint the opening seconds of a call are less accurate.
+
+If in doubt, test both on your own recordings with the languages you expect and
+compare.
+
 ## Keeping the stream healthy
 
 - **Send steadily.** Bursting a buffer is worse than a paced 20 ms cadence.
 - **Reconnect on close.** Networks drop; keep the transcript you already
   finalised and resume.
-- **Close cleanly** when you stop, so the last partial result is flushed.
+- **Send `end` before you close**, so the last result is flushed.
+- **Long calls are fine.** The service reconnects to the engine behind the
+  scenes on long sessions; you will not see a gap.
