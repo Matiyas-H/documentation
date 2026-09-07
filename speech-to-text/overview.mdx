@@ -15,12 +15,53 @@ Authenticate with the same key you use for the rest of the API, in the
 
 | | Endpoint | Use it for |
 | --- | --- | --- |
-| **Batch** | `POST /transcribe` | Recordings, uploads, anything already on disk |
-| **Streaming** | `wss://.../stream` | Live audio, as it is being spoken |
+| **File** | `POST /transcribe` | Recordings up to 60 seconds. Synchronous — the text comes back in the response. |
+| **Long audio** | `POST /batch` | Meetings, calls, podcasts, up to 8 hours. Asynchronous — poll for the result. |
+| **Streaming** | `wss://.../stream` and `wss://.../v2/stream` | Live audio, as it is being spoken. |
 
-Language is auto-detected — there is no language parameter to get wrong.
+## Languages
+
+Every endpoint accepts a `languages` option: BCP-47 codes, up to 10, or `auto`
+to detect the language. On the REST endpoints pass it as the `X-Languages`
+header or `?languages=` query parameter. The default is Finnish and Swedish
+(`fi-FI,sv-SE`) except on `/v2/stream`, which auto-detects.
+
+```bash
+-H "X-Languages: et-EE,ru-RU"
+```
+
+### Supported languages
+
+`GET /languages` lists every supported code with a status of `stable` or
+`preview`. No key needed. Add `?codes=` to check specific ones before you build
+on them.
+
+```bash
+curl "https://stt.omnia-voice.com/languages?codes=et-EE,ru-RU"
+```
+
+```json
+{
+  "codes": ["et-EE", "ru-RU"],
+  "maxPerRequest": 10,
+  "engines": {
+    "v1": {
+      "et-EE": { "supported": true, "status": "preview", "name": "Estonian (Estonia)" },
+      "ru-RU": { "supported": true, "status": "stable", "name": "Russian (Russia)" }
+    },
+    "v2": {
+      "et-EE": { "supported": true, "status": "preview", "name": "Estonian" },
+      "ru-RU": { "supported": true, "status": "stable", "name": "Russian" }
+    }
+  }
+}
+```
+
+`v1` covers `/transcribe`, `/batch` and `/stream`; `v2` covers `/v2/stream`.
 
 ## Transcribe a file
+
+Up to 10 MB and 60 seconds of audio. For anything longer, use `/batch`.
 
 <CodeGroup>
 
@@ -28,6 +69,7 @@ Language is auto-detected — there is no language parameter to get wrong.
 curl -X POST "https://stt.omnia-voice.com/transcribe" \
   -H "X-API-Key: $OMNIA_API_KEY" \
   -H "Content-Type: audio/mpeg" \
+  -H "X-Languages: fi-FI,sv-SE" \
   --data-binary @audio.mp3
 ```
 
@@ -41,6 +83,7 @@ const res = await fetch("https://stt.omnia-voice.com/transcribe", {
   headers: {
     "X-API-Key": process.env.OMNIA_API_KEY,
     "Content-Type": "audio/mpeg",
+    "X-Languages": "fi-FI,sv-SE",
   },
   body: audio,
 });
@@ -58,6 +101,7 @@ with open("audio.mp3", "rb") as f:
         headers={
             "X-API-Key": os.environ["OMNIA_API_KEY"],
             "Content-Type": "audio/mpeg",
+            "X-Languages": "fi-FI,sv-SE",
         },
         data=f,
     )
@@ -71,9 +115,14 @@ print(res.json()["transcript"])
 
 ```json
 {
-  "transcript": "Hello, this is the transcribed text.",
-  "duration_ms": 5230,
-  "language": "en-US"
+  "transcript": "Moi, Kati tässä. Oisko sulla hetki aikaa?",
+  "segments": [
+    { "transcript": "Moi, Kati tässä. Oisko sulla hetki aikaa?", "confidence": 0, "language": "fi-FI", "isFinal": true }
+  ],
+  "audioSize": 184320,
+  "estimatedDurationMs": 5760,
+  "processingTime": 1480,
+  "sessionId": "stt_1788786506604_8fd6cc541a02b620"
 }
 ```
 
@@ -81,18 +130,57 @@ print(res.json()["transcript"])
   The full text.
 </ResponseField>
 
-<ResponseField name="duration_ms" type="integer">
-  Audio length in milliseconds. This is what you are billed on.
+<ResponseField name="segments" type="array">
+  The text split by the engine, each with the detected `language`.
 </ResponseField>
 
-<ResponseField name="language" type="string">
-  The detected language.
+<ResponseField name="estimatedDurationMs" type="integer">
+  Audio length in milliseconds, estimated from the file. This is what you are
+  billed on.
 </ResponseField>
+
+<ResponseField name="processingTime" type="integer">
+  How long recognition took, in milliseconds.
+</ResponseField>
+
+## Transcribe long audio
+
+`POST /batch` takes the same headers as `/transcribe`, accepts up to 500 MB and
+8 hours, and returns an operation to poll. Add `X-Diarization: true` to get a
+`speakerTurns` array saying who said what.
+
+```bash
+# Start
+curl -X POST "https://stt.omnia-voice.com/batch" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: audio/mp4" \
+  -H "X-Languages: auto" \
+  --data-binary @meeting.m4a
+# → { "operationId": "batch_…", "status": "processing", "pollUrl": "/batch/batch_…" }
+
+# Poll every 10–30 s until status is "completed"
+curl "https://stt.omnia-voice.com/batch/batch_…" -H "X-API-Key: $OMNIA_API_KEY"
+# → { "status": "completed", "transcript": "…", "segments": […], "durationMs": 3600000 }
+```
+
+Results are kept for 24 hours. Direct uploads are capped at 32 MB by the
+platform; for larger files call `POST /batch/init`, `PUT` the audio to the
+returned `uploadUrl`, then `POST /batch/{operationId}/start`. The full flow is
+in the API reference at `https://stt.omnia-voice.com/`.
 
 ## Audio formats
 
-Send the matching `Content-Type` — `audio/mpeg` for MP3, `audio/wav` for WAV,
-`audio/ogg`, `audio/webm`, `audio/mp4`.
+Send the matching `Content-Type`.
+
+| Format | `/transcribe` | `/batch` |
+| --- | --- | --- |
+| MP3 `audio/mpeg` | ✓ | ✓ |
+| WAV `audio/wav` | ✓ | ✓ |
+| FLAC `audio/flac` | ✓ | ✓ |
+| OGG Opus `audio/ogg` | ✓ | ✓ |
+| WebM Opus `audio/webm` | ✓ | ✓ |
+| MP4 / M4A `audio/mp4` | | ✓ |
+| Raw PCM `audio/x-raw` (16 kHz, 16-bit, mono) | ✓ | ✓ |
 
 <Tip>
   Quality in beats quality out. 16 kHz mono is plenty for speech and keeps

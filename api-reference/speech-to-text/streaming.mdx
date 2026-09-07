@@ -1,0 +1,146 @@
+---
+title: "Streaming protocol"
+description: "WebSocket reference for /stream and /v2/stream."
+---
+
+```
+wss://stt.omnia-voice.com/stream
+wss://stt.omnia-voice.com/v2/stream
+```
+
+Both endpoints speak the same protocol. The URL picks the engine; everything
+else is identical. For a walkthrough with full examples see the
+[Streaming transcription](/speech-to-text/streaming) guide.
+
+## Engines
+
+| | `/stream` | `/v2/stream` |
+| --- | --- | --- |
+| Status | Generally available | Preview |
+| Default languages | `fi-FI`, `sv-SE` | `auto` |
+| `languages` option | Restricts recognition to the codes given | Biases recognition toward the codes given; may still switch language mid-session |
+| Interim results | Occasional | Continuous, roughly twice per second |
+| Finals | Short phrases, finalised quickly | Whole utterances, finalised at pauses |
+| `language` on results | Detected code per result | Empty |
+| `confidence` on finals | `0` | `0` |
+| Session length | Unlimited; reconnects behind the scenes | Unlimited; reconnects behind the scenes |
+
+## Connecting
+
+**Query parameters** (both endpoints)
+
+| Parameter | Description |
+| --- | --- |
+| `languages` | Comma-separated BCP-47 codes, up to 10, or `auto`. Overridden by `languages` in the auth message if both are given. |
+
+**Authentication**, one of:
+
+1. Subprotocol list `["token", "<api key>"]` on the upgrade. The socket is
+   authenticated before it opens; a bad key is refused with HTTP 401.
+2. An `auth` message within 30 seconds of connecting (below).
+
+Rejections at upgrade time: `400` for an invalid `languages` value, `401` for
+a bad key, `503` when the service is at capacity.
+
+## Client → server messages
+
+Audio is sent as **binary frames**: 16 kHz, 16-bit signed little-endian PCM,
+mono, ideally 640 bytes (20 ms) per frame at a steady cadence.
+
+Control messages are JSON text frames:
+
+<ResponseField name="auth" type="object">
+  Authenticate when no subprotocol was used. Must be the first message.
+
+  ```json
+  {
+    "type": "auth",
+    "apiKey": "om_xxx",
+    "languages": ["fi-FI", "sv-SE"],
+    "metadata": { "callId": "abc-123" }
+  }
+  ```
+
+  `languages` and `metadata` are optional. `metadata` is passed through
+  unchanged to usage webhooks and cannot be set with subprotocol auth.
+</ResponseField>
+
+<ResponseField name="end" type="object">
+  Signal that no more audio is coming. The engine flushes its last result.
+  Keep the socket open until you receive it, then close.
+
+  ```json
+  { "type": "end" }
+  ```
+</ResponseField>
+
+## Server → client messages
+
+<ResponseField name="ready" type="object">
+  Authentication succeeded and the engine is configured. Send audio after this.
+
+  ```json
+  {
+    "type": "ready",
+    "sessionId": "stt_1788786506604_8fd6cc541a02b620",
+    "message": "Authenticated. Send audio as binary frames.",
+    "languages": ["fi-FI", "sv-SE"],
+    "audio_format": {
+      "required": "PCM 16-bit signed little-endian (LINEAR16)",
+      "sample_rate": 16000,
+      "channels": 1,
+      "chunk_size_bytes": 640,
+      "chunk_interval_ms": 20
+    }
+  }
+  ```
+
+  `sessionId` is the same id reported in usage webhooks. `languages` echoes the
+  configuration actually applied.
+</ResponseField>
+
+<ResponseField name="transcript" type="object">
+  A recognition result.
+
+  ```json
+  {
+    "type": "transcript",
+    "transcript": "Moi, Kati tässä.",
+    "isFinal": true,
+    "confidence": 0,
+    "language": "fi-FI"
+  }
+  ```
+
+  `isFinal: false` results are provisional and will be replaced. `isFinal: true`
+  results are settled. On `/v2/stream` an interim carries the cumulative text of
+  the current utterance so far; the matching final replaces it.
+</ResponseField>
+
+<ResponseField name="error" type="object">
+  ```json
+  { "type": "error", "code": "INVALID_API_KEY", "error": "Invalid API key", "message": "Invalid API key" }
+  ```
+
+  `error` and `message` carry the same text. Codes you may see:
+
+  | Code | Meaning |
+  | --- | --- |
+  | `INVALID_API_KEY`, `API_KEY_DISABLED`, `API_KEY_EXPIRED` | Key rejected |
+  | `NO_SUBSCRIPTION`, `INSUFFICIENT_CREDITS`, `FEATURE_NOT_AVAILABLE` | Account cannot use transcription right now |
+  | `INVALID_LANGUAGES` | Bad `languages` value in the auth message |
+  | `NOT_AUTHENTICATED` | Audio or control message sent before `auth` |
+  | `AUTH_TIMEOUT` | No `auth` message within 30 seconds |
+  | `SERVICE_UNAVAILABLE` | Temporary upstream failure; reconnect |
+</ResponseField>
+
+## Lifecycle
+
+1. Connect with the key in the subprotocol, or connect and send `auth`.
+2. Wait for `ready`.
+3. Send audio frames at a steady 20 ms cadence. Read `transcript` messages.
+4. Send `end`. Wait for the last `isFinal: true`.
+5. Close the socket.
+
+Usage is reported once per session, after the socket closes, with
+`type: "stream"`, the billed duration, and any `metadata` you attached.
