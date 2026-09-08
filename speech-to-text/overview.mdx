@@ -21,7 +21,7 @@ Authenticate with the same key you use for the rest of the API, in the
 
 ## Languages
 
-Every endpoint accepts a `languages` option: BCP-47 codes, up to 10, or `auto`
+Every endpoint accepts a `languages` option: BCP-47 codes, up to 4, or `auto`
 to detect the language. On the REST endpoints pass it as the `X-Languages`
 header or `?languages=` query parameter. The default is Finnish and Swedish
 (`fi-FI,sv-SE`) except on `/v2/stream`, which auto-detects.
@@ -43,7 +43,7 @@ curl "https://stt.omnia-voice.com/languages?codes=et-EE,ru-RU"
 ```json
 {
   "codes": ["et-EE", "ru-RU"],
-  "maxPerRequest": 10,
+  "maxPerRequest": 4,
   "engines": {
     "v1": {
       "et-EE": { "supported": true, "status": "preview", "name": "Estonian (Estonia)" },
