@@ -55,11 +55,89 @@ For `pcm`, send 16-bit mono at the `inputSampleRate` you requested.
 
 | Type | Meaning |
 | --- | --- |
-| `transcript` | Speech recognised. Carries the speaker (`user` or `agent`) and whether it is final |
+| `transcript` | Speech recognised. Carries the speaker (`user` or `agent`) and whether it is final — see [Transcripts](#transcripts) |
 | `state` | The agent started or stopped speaking |
 | `client_tool_invocation` | The agent is calling one of your client tools |
 | `hangup` | The call is ending |
 | `error` | Something failed |
+
+## Transcripts
+
+Every `transcript` message has the same shape, for either speaker:
+
+```json
+{
+  "type": "transcript",
+  "role": "agent",
+  "medium": "voice",
+  "text": "Hi, you've reached the front desk.",
+  "delta": null,
+  "final": false,
+  "ordinal": 0
+}
+```
+
+<ResponseField name="role" type="string" required>
+  Who spoke: `user` or `agent`.
+</ResponseField>
+
+<ResponseField name="medium" type="string" default="voice">
+  `voice` for speech, `text` for a `user_text_message` you injected.
+</ResponseField>
+
+<ResponseField name="text" type="string">
+  The full text of the utterance so far. Set on the first message of an
+  utterance and on the final one. Never set together with `delta`.
+</ResponseField>
+
+<ResponseField name="delta" type="string">
+  Text to append to what you already have for this `ordinal`. Never set
+  together with `text`.
+</ResponseField>
+
+<ResponseField name="final" type="boolean" required>
+  `false` while more messages for this `ordinal` are coming, `true` on the last one.
+</ResponseField>
+
+<ResponseField name="ordinal" type="integer" required>
+  Position of the utterance in the conversation. Messages for one utterance
+  share an ordinal; use it to group and order them.
+</ResponseField>
+
+The two roles behave differently, and the difference matters for what you can
+show on screen:
+
+- **Agent speech streams.** The first message carries `text`, then a run of
+  `delta` messages with `final: false` arrives roughly a word at a time as the
+  agent talks, then one `final: true` message repeats the whole utterance in
+  `text`.
+- **Caller speech arrives once.** Nothing is sent while the caller is talking.
+  When their turn ends you get a single message with `final: true` and the full
+  `text`, typically about a second after they stop — and usually just *after*
+  the first message of the agent's reply, even though the caller's ordinal is
+  lower.
+
+Because agent text arrives in pieces and the caller's message can land out of
+order, key your rendering on `ordinal` rather than appending each message as a
+new line:
+
+```javascript
+const utterances = new Map(); // ordinal → { role, text, final }
+
+ws.on("message", (data) => {
+  const msg = JSON.parse(data);
+  if (msg.type !== "transcript") return;
+
+  const prev = utterances.get(msg.ordinal) ?? { role: msg.role, text: "", final: false };
+  utterances.set(msg.ordinal, {
+    role: msg.role,
+    text: msg.text ?? prev.text + (msg.delta ?? ""),
+    final: msg.final,
+  });
+
+  render([...utterances.entries()].sort(([a], [b]) => a - b).map(([, u]) => u));
+});
+```
 
 ## Messages you send
 
