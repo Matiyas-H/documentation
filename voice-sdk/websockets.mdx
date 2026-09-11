@@ -63,79 +63,89 @@ For `pcm`, send 16-bit mono at the `inputSampleRate` you requested.
 
 ## Transcripts
 
-Every `transcript` message has the same shape, for either speaker:
+A `transcript` message is one piece of one utterance. Here is what one short
+exchange looks like on the socket, in the order the frames arrive:
 
-```json
-{
-  "type": "transcript",
-  "role": "agent",
-  "medium": "voice",
-  "text": "Hi, you've reached the front desk.",
-  "delta": null,
-  "final": false,
-  "ordinal": 0
-}
+```
+role   ordinal  final  field  value
+agent  0        false  text   "Hi, you've reached the front desk."
+agent  0        false  delta  " How"
+agent  0        false  delta  " can"
+agent  0        false  delta  " I help?"
+agent  0        true   text   "Hi, you've reached the front desk. How can I help?"
+
+       (the caller talks for a few seconds — nothing arrives)
+
+agent  2        false  text   "Sure"
+user   1        true   text   "I'd like to book an appointment."
+agent  2        false  delta  ", let me check the calendar."
+agent  2        true   text   "Sure, let me check the calendar."
 ```
 
+Three things to take from that:
+
+- **The agent streams.** You get its words as it says them, then a closing
+  message with the whole sentence.
+- **The caller does not.** Nothing is sent while they talk. Their whole
+  sentence arrives in one message once their turn is over, about a second
+  after they stop.
+- **The caller's message can arrive late.** It often lands just after the
+  agent's reply has started, even though it belongs before it.
+
+Each field exists to let you handle exactly that:
+
 <ResponseField name="role" type="string" required>
-  Who spoke: `user` or `agent`.
-</ResponseField>
-
-<ResponseField name="medium" type="string" default="voice">
-  `voice` for speech, `text` for a `user_text_message` you injected.
-</ResponseField>
-
-<ResponseField name="text" type="string">
-  The full text of the utterance so far. Set on the first message of an
-  utterance and on the final one. Never set together with `delta`.
-</ResponseField>
-
-<ResponseField name="delta" type="string">
-  Text to append to what you already have for this `ordinal`. Never set
-  together with `text`.
-</ResponseField>
-
-<ResponseField name="final" type="boolean" required>
-  `false` while more messages for this `ordinal` are coming, `true` on the last one.
+  `user` or `agent`. Decides which side of the conversation the text goes on.
 </ResponseField>
 
 <ResponseField name="ordinal" type="integer" required>
-  Position of the utterance in the conversation. Messages for one utterance
-  share an ordinal; use it to group and order them.
+  Which utterance this piece belongs to. All the agent's `delta` pieces above
+  share ordinal `0`, so you know to join them. It is also the true order: the
+  caller's ordinal `1` belongs before the agent's `2` even though it arrived
+  after. Sort by it, not by arrival.
 </ResponseField>
 
-The two roles behave differently, and the difference matters for what you can
-show on screen:
+<ResponseField name="text" type="string">
+  The utterance so far, in full. Present on the first piece and the last one.
+  When you see it, replace whatever you have for that ordinal.
+</ResponseField>
 
-- **Agent speech streams.** The first message carries `text`, then a run of
-  `delta` messages with `final: false` arrives roughly a word at a time as the
-  agent talks, then one `final: true` message repeats the whole utterance in
-  `text`.
-- **Caller speech arrives once.** Nothing is sent while the caller is talking.
-  When their turn ends you get a single message with `final: true` and the full
-  `text`, typically about a second after they stop — and usually just *after*
-  the first message of the agent's reply, even though the caller's ordinal is
-  lower.
+<ResponseField name="delta" type="string">
+  A few more characters for the same ordinal. When you see it, append. A message
+  has `text` or `delta`, never both.
+</ResponseField>
 
-Because agent text arrives in pieces and the caller's message can land out of
-order, key your rendering on `ordinal` rather than appending each message as a
-new line:
+<ResponseField name="final" type="boolean" required>
+  `false` means more pieces for this ordinal are coming, `true` means this is
+  the last one. Use it to stop showing a typing indicator, or to know a caller
+  turn is complete before you act on it.
+</ResponseField>
+
+<ResponseField name="medium" type="string" default="voice">
+  `voice` if it was spoken, `text` if you injected it with `user_text_message`.
+  Useful if you want to style typed input differently.
+</ResponseField>
+
+Put together, a handler is a dozen lines:
 
 ```javascript
-const utterances = new Map(); // ordinal → { role, text, final }
+const utterances = {};   // ordinal → { role, text, final }
 
 ws.on("message", (data) => {
   const msg = JSON.parse(data);
   if (msg.type !== "transcript") return;
 
-  const prev = utterances.get(msg.ordinal) ?? { role: msg.role, text: "", final: false };
-  utterances.set(msg.ordinal, {
-    role: msg.role,
-    text: msg.text ?? prev.text + (msg.delta ?? ""),
-    final: msg.final,
-  });
+  const u = utterances[msg.ordinal] ?? { role: msg.role, text: "" };
 
-  render([...utterances.entries()].sort(([a], [b]) => a - b).map(([, u]) => u));
+  if (msg.text != null) u.text = msg.text;           // full text: replace
+  else if (msg.delta) u.text += msg.delta;           // delta: append
+  u.final = msg.final;
+
+  utterances[msg.ordinal] = u;
+
+  // Render in conversation order, not arrival order.
+  const ordered = Object.keys(utterances).sort((a, b) => a - b).map((k) => utterances[k]);
+  render(ordered);
 });
 ```
 
