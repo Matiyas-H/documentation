@@ -44,7 +44,7 @@ components:
         type: string
         example: fi-FI,sv-SE
       description: |
-        Comma-separated BCP-47 codes (up to 10), or `auto` on its own to detect the
+        Comma-separated BCP-47 codes (up to 4), or `auto` on its own to detect the
         language. Defaults to `fi-FI,sv-SE`. Also accepted as `?languages=`.
         See `GET /languages` for supported codes.
     Metadata:
@@ -484,7 +484,7 @@ paths:
                     properties:
                       maxPerRequest:
                         type: integer
-                        example: 10
+                        example: 4
                       engines:
                         type: object
                         additionalProperties:
