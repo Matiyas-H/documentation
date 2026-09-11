@@ -74,7 +74,7 @@ agent  0        false  delta  " can"
 agent  0        false  delta  " I help?"
 agent  0        true   text   "Hi, you've reached the front desk. How can I help?"
 
-       (the caller talks for a few seconds — nothing arrives)
+       (the caller speaks)
 
 agent  2        false  text   "Sure"
 user   1        true   text   "I'd like to book an appointment."
@@ -86,11 +86,10 @@ Three things to take from that:
 
 - **The agent streams.** You get its words as it says them, then a closing
   message with the whole sentence.
-- **The caller does not.** Nothing is sent while they talk. Their whole
-  sentence arrives in one message once their turn is over, about a second
-  after they stop.
-- **The caller's message can arrive late.** It often lands just after the
-  agent's reply has started, even though it belongs before it.
+- **The caller arrives as the final version.** Their sentence comes as one
+  message, already `final: true`, so there is nothing to assemble.
+- **Order by `ordinal`.** The caller's utterance always has a lower ordinal
+  than the reply it prompted, so sort by ordinal rather than by arrival.
 
 Each field exists to let you handle exactly that:
 
@@ -100,9 +99,9 @@ Each field exists to let you handle exactly that:
 
 <ResponseField name="ordinal" type="integer" required>
   Which utterance this piece belongs to. All the agent's `delta` pieces above
-  share ordinal `0`, so you know to join them. It is also the true order: the
-  caller's ordinal `1` belongs before the agent's `2` even though it arrived
-  after. Sort by it, not by arrival.
+  share ordinal `0`, so you know to join them. It is also the conversation
+  order: the caller's ordinal `1` belongs before the agent's `2`, whatever
+  order the messages arrive in.
 </ResponseField>
 
 <ResponseField name="text" type="string">
