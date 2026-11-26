@@ -43,6 +43,21 @@
             ]
           },
           {
+            "group": "Voice API",
+            "pages": [
+              "voice-api/overview",
+              "voice-api/quickstart",
+              "voice-api/agents",
+              "voice-api/tools",
+              "voice-api/calls",
+              "voice-api/phone-numbers",
+              "voice-api/campaigns",
+              "voice-api/webhooks",
+              "voice-api/models-and-voices",
+              "voice-api/errors"
+            ]
+          },
+          {
             "group": "Core concepts",
             "pages": [
               "concepts/agents",
@@ -129,6 +144,13 @@
             "pages": [
               "api-reference/speech-to-text/streaming"
             ]
+          },
+          {
+            "group": "Voice API (v2)",
+            "openapi": {
+              "source": "openapi-v2.json",
+              "directory": "api-reference/v2"
+            }
           }
         ],
         "openapi": "openapi.yaml"

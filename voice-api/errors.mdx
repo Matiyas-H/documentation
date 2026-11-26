@@ -1,0 +1,299 @@
+---
+title: "Authentication, errors and limits"
+description: "Which keys work with API v2, the two error shapes, idempotent retries, pagination and rate limits."
+---
+
+## Authentication
+
+API v2 takes the same Omnia API keys as API v1, in the same header:
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/agents" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+Not every key works. A key is accepted when all of these hold:
+
+| Requirement | Refused with |
+| --- | --- |
+| The key belongs to a **workspace**. Keys created before workspaces existed belong to a user and cannot be used | `403 WORKSPACE_REQUIRED` |
+| The workspace has the **Voice API enabled** | `403 FEATURE_DISABLED` |
+| The workspace is **not pinned to a data region**. The engine runs in one location, so a regional workspace's calls would leave its region | `403 REGION_NOT_SUPPORTED` |
+
+The key carries its workspace. Everything it creates or reads (agents, calls,
+numbers, webhooks) belongs to that workspace only, and usage is billed to the
+workspace owner, as on API v1. See [Authentication](/authentication) for
+creating, storing and rotating keys.
+
+<Note>
+  A key from a data-region workspace used against `api.omnia-voice.com` is
+  refused earlier, with `403 FORBIDDEN` and a message naming the regional
+  endpoint it belongs to. The regional endpoints answer API v2 requests with
+  `403 REGION_NOT_SUPPORTED`.
+</Note>
+
+## Errors
+
+Errors come in two shapes, depending on where the request stopped.
+
+### Gateway errors
+
+Checks made before a request reaches the engine (the key, the endpoint, your
+balance) fail the same way as API v1:
+
+```json
+{
+  "error": {
+    "message": "API v2 is not enabled for this workspace.",
+    "code": "FEATURE_DISABLED"
+  }
+}
+```
+
+| Status | `code` | What it means |
+| --- | --- | --- |
+| `400` | `INVALID_JSON` | The body is not valid JSON |
+| `401` | `UNAUTHORIZED` | No `X-API-Key`, or the key is unknown or expired |
+| `402` | `INSUFFICIENT_BALANCE` | Not enough credit to start a call or campaign. [Below](#credit) |
+| `403` | `FORBIDDEN` | The key is disabled, or belongs to a data-region workspace |
+| `403` | `WORKSPACE_REQUIRED` | The key does not belong to a workspace |
+| `403` | `FEATURE_DISABLED` | The Voice API is not enabled for the workspace |
+| `403` | `REGION_NOT_SUPPORTED` | A data-region workspace, or a regional endpoint |
+| `404` | `NOT_FOUND` | No such endpoint in API v2 |
+| `405` | `METHOD_NOT_ALLOWED` | The endpoint exists, but not with this method |
+| `429` | `RATE_LIMIT_EXCEEDED` | Too many requests. [Below](#rate-limits) |
+| `500` | `INTERNAL_ERROR` | The key could not be checked. Retry |
+| `502` | `UPSTREAM_UNAVAILABLE` | The voice engine did not answer. Retry with backoff |
+| `503` | `NOT_AVAILABLE` | API v2 is not available. Retry later |
+
+<Warning>
+  A gateway `404 NOT_FOUND` means the **path** does not exist, not that a
+  resource is missing. A typo such as `/api/v2/agent/ID` gets one. An agent id
+  that does not exist on a correct path gets the engine's own 404, in the
+  [other shape](#engine-errors). Read the body before concluding a resource is
+  gone.
+</Warning>
+
+Each resource takes only these methods; anything else is `405`:
+
+| Resource | Methods |
+| --- | --- |
+| `agents`, `tools`, `calls`, `phone-numbers`, `webhook-endpoints` | `GET`, `POST`, `PATCH`, `DELETE` |
+| `carrier-connections` | `GET`, `POST`, `DELETE` |
+| `campaigns` | `GET`, `POST` |
+| `secrets` | `GET`, `PUT`, `DELETE` |
+| `audio-assets` | `GET`, `DELETE` |
+| `voices`, `catalog` | `GET` |
+
+Which paths exist under each one is in the API Reference.
+
+### Engine errors
+
+Everything past the gateway (a missing agent, an invalid definition, a call
+that cannot start) is answered by the engine as a **problem document**, passed
+through with its status unchanged:
+
+```json
+{
+  "type": "...",
+  "title": "Invalid request",
+  "status": 422,
+  "code": "missing_variable",
+  "detail": "Missing values for variables: account_id, promo",
+  "missing": ["account_id", "promo"],
+  "required": ["account_id"],
+  "undeclared": ["promo"]
+}
+```
+
+<ResponseField name="code" type="string">
+  Stable and machine-readable, in lower case (`missing_variable`,
+  `invalid_agent`, `voice_unavailable`). Branch on this.
+</ResponseField>
+
+<ResponseField name="detail" type="string">
+  What went wrong, for a person. Do not parse it; the wording changes.
+</ResponseField>
+
+<ResponseField name="errors" type="object[]">
+  For validation failures: one entry per problem, each with `loc` (the path to
+  the field, as a list of keys and indexes), `msg` and `type`.
+</ResponseField>
+
+Some codes add fields of their own, as `missing` above.
+
+<Note>
+  You can tell the shapes apart by their top level: gateway errors have an
+  `error` object with an upper-case `code`; engine errors have `code` and
+  `detail` at the top. A client that handles both should look for `error`
+  first.
+</Note>
+
+### Validation errors
+
+A body that does not match the schema is a `422` with `errors`:
+
+```json
+{
+  "status": 422,
+  "code": "invalid_agent",
+  "detail": "...",
+  "errors": [
+    {
+      "loc": ["models", "llm", "temperature"],
+      "msg": "Input should be less than or equal to 2",
+      "type": "less_than_equal"
+    }
+  ]
+}
+```
+
+`loc` points into your request body, so `["models", "llm", "temperature"]` is
+`definition.models.llm.temperature` of the agent you sent.
+
+<Tip>
+  For agents, call `POST /api/v2/agents/validate` first. It returns the same
+  `errors` with status `200`, plus non-blocking `warnings`, without saving
+  anything, which suits an editor that shows problems as the user types.
+</Tip>
+
+### Credit
+
+Requests that **start something billable** are refused up front when the
+workspace cannot pay for at least one minute:
+
+- `POST /api/v2/calls/web`
+- `POST /api/v2/calls/outbound`
+- `POST /api/v2/campaigns`
+- `POST /api/v2/campaigns/{campaign_id}/resume`
+
+They answer `402 INSUFFICIENT_BALANCE` instead of starting a call the workspace
+cannot pay for. Nothing else is checked for credit: reading calls and editing
+agents work with an empty balance. See [Credits](/concepts/credits).
+
+## Retrying safely: `Idempotency-Key`
+
+A request that times out may still have succeeded. Retrying
+`POST /api/v2/calls/outbound` blindly can ring the same person twice.
+
+Send an `Idempotency-Key` header when you create a web or outbound call, and
+send the **same** key on every retry of that request:
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/calls/outbound" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Idempotency-Key: reminder-cus_981-2026-11-26" \
+  -H "Content-Type: application/json" \
+  -d '{ "agent_id": "front-desk", "from_number_id": "NUMBER_ID", "to": "+358409876543" }'
+```
+
+Keys are remembered per workspace: a repeated request with a key that already
+created a call does not create a second one. The body field `idempotency_key`
+does the same job, for clients that cannot set headers.
+
+Keep keys to **128 characters** or fewer (the limit on `idempotency_key`).
+Derive them from what makes the call unique on your side, a reminder id or a
+campaign row, rather than a random value generated per attempt: a key that
+changes on retry protects nothing.
+
+## Tracing a request: `X-Request-Id`
+
+Send an `X-Request-Id` header with your own identifier and it is passed on to
+the engine with the request, so a support ticket that quotes it can be traced
+end to end. Values longer than 200 characters are cut to 200. Use one id per
+request, for example the id your own logging already assigns.
+
+## Pagination
+
+Lists of agents, tools, calls, campaigns, phone numbers, carrier connections,
+audio assets and call events are paged with a cursor:
+
+```json
+{
+  "data": [ { "id": "..." } ],
+  "next_cursor": "..."
+}
+```
+
+Pass `next_cursor` back as `cursor` to get the next page, with the same
+filters. `next_cursor` is `null` on the last page.
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/calls?limit=100&cursor=$NEXT_CURSOR" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+| List | `limit` default | `limit` max |
+| --- | --- | --- |
+| `agents`, `tools`, `calls`, `campaigns`, `campaigns/{campaign_id}/calls` | 20 | 100 |
+| `phone-numbers`, `carrier-connections`, `audio-assets` | 50 | 200 |
+| `calls/{call_id}/events` | 100 | 500 |
+| `campaigns/{campaign_id}/contacts` | 100 | 1000 |
+
+Treat the cursor as opaque: store it and send it back, never build or edit
+one.
+
+Most of these lists also take `q` (free-text search) and `created_at_gt`,
+`created_at_lt`, `created_at_ge`, `created_at_le` (RFC 3339) to narrow what is
+paged.
+
+<Note>
+  Phone numbers, carrier connections and audio assets also return the same
+  array as `items`. It is kept for compatibility; read `data`.
+</Note>
+
+Two kinds of list are not cursor-paged:
+
+- `GET /api/v2/webhook-endpoints` returns every endpoint in `data`.
+- Voice lists (`/api/v2/voices`, `/api/v2/catalog/.../voices`) page with
+  `limit` and `offset` and report `total`. See
+  [Models and voices](/voice-api/models-and-voices).
+
+## Rate limits
+
+Requests are limited **per API key**: by default **50 requests per minute**.
+API v1 and API v2 share the same allowance, so a key used for both spends from
+one budget.
+
+The window is fixed: it starts with the first request and resets 60 seconds
+later. Request 51 in that minute gets `429 RATE_LIMIT_EXCEEDED`, as does every
+request until the window resets.
+
+| Header | Meaning |
+| --- | --- |
+| `X-RateLimit-Remaining` | Requests left in the current window |
+| `X-RateLimit-Reset` | A time by which the window has reset, as a Unix timestamp in **milliseconds** |
+
+<Warning>
+  Do not size your client from `X-RateLimit-Limit`: it does not report the
+  per-minute limit your key has. Count from `X-RateLimit-Remaining`. And note
+  `X-RateLimit-Reset` is in milliseconds, unlike most APIs; read as seconds it
+  is a date tens of thousands of years from now, and a client waiting until
+  then never retries.
+</Warning>
+
+Every request with a valid key counts, including ones refused with `4xx`. A loop that retries
+a `403 FEATURE_DISABLED` immediately will spend the key's whole minute and
+then take the rest of your integration down with `429` too. Retry only on
+`429`, `502`, `503` and `500`, with backoff.
+
+<Tip>
+  Webhooks do not count against the limit. Subscribing to
+  [`call.ended`](/voice-api/webhooks) instead of polling `GET /api/v2/calls`
+  for status saves most of the budget a busy integration uses.
+</Tip>
+
+## CORS
+
+API v2 answers browser preflight requests for any origin, allowing `GET`,
+`POST`, `PATCH`, `PUT`, `DELETE` and the headers `Content-Type`, `X-API-Key`,
+`Idempotency-Key` and `X-Request-Id`.
+
+That makes the API reachable from a browser, not safe to call from one.
+
+<Warning>
+  An API key in browser code is public: anyone can read it and spend your
+  credits. Call API v2 from your server. For a voice session in the browser,
+  your server creates the web call and hands the browser only what that call
+  returns.
+</Warning>

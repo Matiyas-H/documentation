@@ -1,0 +1,591 @@
+---
+title: "Calls"
+description: "Start web, outbound and inbound calls, steer them while they run, and read what happened."
+---
+
+A **call** is one conversation between a person and a Voice API agent. It
+starts in one of three ways, and from then on it is the same resource: the same
+statuses, the same live controls, the same report at the end.
+
+| Channel | How it starts | `channel` |
+| --- | --- | --- |
+| Browser or app | `POST /api/v2/calls/web` | `web` |
+| The agent calls out | `POST /api/v2/calls/outbound` | `outbound` |
+| Someone calls your number | A [phone number](/voice-api/phone-numbers) with an agent on it | `inbound` |
+
+<Note>
+  Starting a web or outbound call needs credit. Without it the request is
+  refused with `402 INSUFFICIENT_BALANCE` before anything is dialled. Calls are
+  billed per minute from the same balance as every other Omnia call; see
+  [Credits](/concepts/credits).
+</Note>
+
+## Choosing the agent
+
+Both create requests take the agent in one of two forms:
+
+<ParamField body="agent_id" type="string">
+  A stored agent. Add `agent_version` to pin a version; without it the call runs
+  the agent's latest version.
+</ParamField>
+
+<ParamField body="agent" type="object">
+  A whole [agent definition](/voice-api/agents) inline, for agents generated per
+  call. Nothing is saved.
+</ParamField>
+
+## What every call can carry
+
+These fields are accepted by both `POST /api/v2/calls/web` and
+`POST /api/v2/calls/outbound`.
+
+<ParamField body="variables" type="object">
+  Values for the agent's `{{placeholders}}`. Up to 100 entries; names match
+  `^[A-Za-z_][A-Za-z0-9_]{0,63}$`; values are strings (up to 10,000
+  characters), numbers or booleans. A variable the agent needs and that has no
+  value and no default rejects the call with `422 missing_variable`, naming the
+  missing ones, rather than letting the agent read a placeholder out loud.
+</ParamField>
+
+<ParamField body="customer" type="object">
+  Who the call is with: `number` (E.164), `extension`, `name`, `email`,
+  `external_id`. Stored on the call, returned on it and on every webhook
+  delivery, and searchable with `GET /api/v2/calls`. It is **not** sent to the
+  model; pass anything the agent should know as `variables`.
+</ParamField>
+
+<ParamField body="overrides" type="object">
+  A partial agent definition merged over the agent for this call only: a
+  different greeting, voice or tool URL, without saving a new agent version.
+  Anything that does not validate answers `422 invalid_overrides`. See
+  [Agents](/voice-api/agents) for the merge rules.
+</ParamField>
+
+<ParamField body="metadata" type="object">
+  Any JSON object of your own: a CRM id, a ticket number. Returned on the call,
+  in call lists and on every webhook delivery.
+</ParamField>
+
+<ParamField body="labels" type="object">
+  Short string tags, up to 20. Keys match `^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$`,
+  values are up to 256 characters.
+</ParamField>
+
+<ParamField body="max_duration_s" type="integer">
+  Time limit for this call, 30–14400 seconds. When the agent definition sets
+  its own limit too, the smaller one wins.
+</ParamField>
+
+<ParamField body="timezone" type="string">
+  IANA time zone (`Europe/Helsinki`). The built-in date and time variables are
+  rendered in it; without it they are UTC.
+</ParamField>
+
+<ParamField body="history" type="array">
+  Up to 50 earlier messages (`{"role": "user" | "assistant", "text": "..."}`,
+  text up to 4000 characters) the conversation starts with, so the agent can
+  pick up where a previous conversation left off.
+</ParamField>
+
+<ParamField body="idempotency_key" type="string">
+  1–128 characters. A retried request with the same key does not start a
+  second call, which matters most when a network timeout leaves you unsure
+  whether the first one went through. The `Idempotency-Key` header works the
+  same way.
+</ParamField>
+
+## Web calls
+
+A web call is a WebRTC session between a browser (or a mobile app) and the agent.
+Create it **on your server**, where the API key lives, and hand the browser only
+what it needs to join.
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/calls/web" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "AGENT_ID",
+    "variables": { "customer_name": "Ada" },
+    "customer": { "external_id": "crm-42", "name": "Ada Lovelace" },
+    "participant": { "name": "Ada" }
+  }'
+```
+
+<ParamField body="participant" type="object">
+  The person joining: `identity` (`^[A-Za-z0-9_.:@-]{1,128}$`), `name` (up to
+  128 characters), `metadata` (a string, up to 4096 characters) and
+  `attributes` (up to 32 string values). With the agent's
+  `web.expose_participant_attributes` turned on, the name and attributes are
+  available to the agent as variables.
+</ParamField>
+
+The response is `201`:
+
+<ResponseField name="call" type="object">
+  The new [call](#the-call-resource).
+</ResponseField>
+
+<ResponseField name="server_url" type="string">
+  The address the browser connects to.
+</ResponseField>
+
+<ResponseField name="participant_token" type="string">
+  The browser's credential for this one session. It is short-lived and only
+  admits this call, so it is safe to send to the browser; the API key is not.
+</ResponseField>
+
+<ResponseField name="room_name" type="string">
+  The session's name. You do not need it to join.
+</ResponseField>
+
+<ResponseField name="expires_at" type="string">
+  When `participant_token` stops being accepted. Create the call when the user
+  presses "Call", not when the page loads.
+</ResponseField>
+
+<Note>
+  A ready-made browser library for joining web calls is not published yet. To
+  try an agent in the browser today, use **Test call** in the dashboard's agent
+  editor. If you need to join web calls from your own front end, contact
+  [support](/getting-help).
+</Note>
+
+<Warning>
+  If nobody joins, the call does not wait forever: it ends with
+  `end_reason_code` `participant_never_joined`. Create a new call rather than
+  reusing an old token.
+</Warning>
+
+## Outbound calls
+
+The agent dials a phone number from one of your
+[phone numbers](/voice-api/phone-numbers).
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/calls/outbound" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: reminder-order-10482" \
+  -d '{
+    "agent_id": "AGENT_ID",
+    "from_number_id": "NUMBER_ID",
+    "to": "+358401234567",
+    "customer": { "number": "+358401234567", "name": "Ada", "external_id": "crm-42" },
+    "variables": { "order_id": "NW-10482" },
+    "ringing_timeout_s": 25
+  }'
+```
+
+The response is `201` with the call.
+
+<ParamField body="from_number_id" type="string" required>
+  The number the call comes from. When the request names no agent
+  (`agent_id` or `agent`), the agent assigned to this number takes the call.
+</ParamField>
+
+<ParamField body="to" type="string">
+  The number to dial, in E.164 form (a leading `+`, country code, no spaces).
+  Without `to`, `customer.number` is dialled.
+</ParamField>
+
+<ParamField body="ringing_timeout_s" type="integer" default="30">
+  How long to let the phone ring, 5–120 seconds. An unanswered call ends with
+  disposition `no_answer`.
+</ParamField>
+
+<ParamField body="schedule" type="object">
+  Place the call later. See [Scheduling](#scheduling).
+</ParamField>
+
+<Accordion title="Dialling options">
+
+<ParamField body="sip_headers" type="object">
+  Up to 10 custom headers sent with the call. Names must start with `X-`
+  (`^X-[A-Za-z0-9-]{1,62}$`); values up to 256 characters.
+</ParamField>
+
+<ParamField body="media_encryption" type="enum" default="allow">
+  `disable`, `allow` or `require` encrypted media.
+</ParamField>
+
+<ParamField body="include_headers" type="enum" default="x_headers">
+  Which headers of the callee's side are kept on the call: `none`,
+  `x_headers` or `all`.
+</ParamField>
+
+<ParamField body="attributes" type="object">
+  Up to 10 string attributes attached to the dialled participant.
+</ParamField>
+
+<ParamField body="display_name" type="string">
+  Caller name to present, up to 64 characters. Whether the callee sees it
+  depends on their carrier.
+</ParamField>
+
+<ParamField body="dtmf" type="string">
+  Keys to press once the call connects, such as an extension
+  (`^[0-9*#w]{1,32}$`).
+</ParamField>
+
+</Accordion>
+
+<Warning>
+  Automated outbound calling is regulated and the rules differ by country:
+  consent, permitted hours, identification, do-not-call registers. Check what
+  applies where you are dialling. To call a whole list, use a
+  [campaign](/voice-api/campaigns) rather than a loop of requests: it limits
+  concurrency and retries for you.
+</Warning>
+
+### Scheduling
+
+```json
+"schedule": {
+  "earliest_at": "2026-12-01T09:00:00+02:00",
+  "latest_at": "2026-12-01T17:00:00+02:00"
+}
+```
+
+The call is stored with status `scheduled` and placed at `earliest_at` (or a
+moment after). If it could not be placed before `latest_at`, it fails with
+`end_reason_code` `schedule_expired` instead of ringing someone at an hour you
+did not choose.
+
+Everything about the call (agent, variables, overrides) is fixed when you
+schedule it. The from-number's carrier is only checked when the call is
+placed, so a number that loses its carrier in between fails the call then,
+with `start_failed`.
+
+To cancel a scheduled call, `DELETE` it or `POST .../hangup`.
+
+## Inbound calls
+
+There is no request to make: give a [phone number](/voice-api/phone-numbers) an
+agent, and every call to it starts a call with `channel` `inbound`.
+
+- The number's `overrides` apply to each of its calls, and its
+  `inbound.max_call_duration_s` is the time limit.
+- Inbound calls cannot carry `variables`, so declared variables fall back to
+  their defaults, or to an empty string. Give every variable an inbound agent
+  uses a sensible default.
+- The built-in date and time variables use the number's `timezone` label when
+  it holds a valid IANA zone, otherwise UTC.
+- To choose the agent per call (by caller, by time, from your CRM), set the
+  number's `inbound.agent_source` to `webhook`; see
+  [Webhooks](/voice-api/webhooks).
+
+## Statuses
+
+| `status` | Meaning |
+| --- | --- |
+| `scheduled` | Outbound with a `schedule`, waiting for `earliest_at` |
+| `created` | Accepted; the agent is being started |
+| `dispatched` | An agent has been assigned and is joining |
+| `ringing` | Outbound: the phone is ringing |
+| `in_progress` | Answered; the conversation is running |
+| `ended` | Over |
+| `failed` | Could not be started or ran into an error |
+
+`status` says where a call is. To know **how it went**, read the fields set
+when it ends:
+
+<ResponseField name="disposition" type="string">
+  The outcome, in one word. The first explicit outcome sticks: a call that
+  reached voicemail stays `voicemail` even though the line closes afterwards.
+
+  | Value | When |
+  | --- | --- |
+  | `completed` | Ended normally, for example the agent ended the call |
+  | `user_hangup` | The caller or web user left, including a line that dropped after it was answered |
+  | `agent_hangup` | The agent side closed without a more specific reason |
+  | `api_hangup` | You ended it with `POST /api/v2/calls/{call_id}/hangup` |
+  | `no_answer` | Outbound, not answered |
+  | `busy` | Outbound, the line was busy |
+  | `rejected` | Outbound, the callee declined |
+  | `voicemail` | Voicemail detection reached a machine |
+  | `transferred` | The caller was transferred to a person or number |
+  | `silence_timeout` | The caller stayed silent through every reprompt |
+  | `max_duration` | The call reached its time limit |
+  | `failed` | A setup or runtime error; `end_reason_code` says which |
+</ResponseField>
+
+<ResponseField name="end_reason_code" type="string">
+  A stable, machine-readable reason. `ended_reason` repeats it,
+  `end_reason` is the same in words, and `end_reason_detail` adds detail, such
+  as the reason the agent gave for ending the call. Common codes:
+
+  `agent_end_call`, `agent_hangup`, `session_completed`, `user_hangup`,
+  `line_dropped`, `api_hangup`, `silence_timeout`, `silence_hard_stop`,
+  `max_duration`, `no_answer`, `busy`, `rejected`, `rejected_inbound`,
+  `voicemail_left`, `voicemail_hangup`, `schedule_expired`, `cancelled`,
+  `transferred`, `participant_never_joined`, `dial_failed`, `media_failure`,
+  `connection_timeout`, `config_error`, `session_error`, `start_failed`.
+</ResponseField>
+
+<Warning>
+  Treat `end_reason_code` as an open set. New codes are added over time; code
+  that switches on it should have a default branch rather than fail on a value
+  it has not seen.
+</Warning>
+
+## While the call runs
+
+These work on web and phone calls while the call is live. Once a call is over
+they answer `409 call_ended`.
+
+### Hang up
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/calls/CALL_ID/hangup" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+`202` with the call. It ends with disposition `api_hangup`. On a `scheduled`
+call it cancels the call instead.
+
+### Make the agent say something
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/calls/CALL_ID/say" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "text": "One moment, I am transferring you to a colleague." }'
+```
+
+<ParamField body="text" type="string" required>
+  Spoken word for word, right away. 1–2000 characters.
+</ParamField>
+
+<ParamField body="allow_interruptions" type="boolean" default="true">
+  Whether the caller can talk over it.
+</ParamField>
+
+<ParamField body="add_to_history" type="boolean" default="true">
+  Whether the line becomes part of the conversation the model sees in later
+  turns.
+</ParamField>
+
+### Steer the agent
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/calls/CALL_ID/instruct" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "instructions": "The customer is a VIP. Offer the premium plan." }'
+```
+
+<ParamField body="instructions" type="string" required>
+  The agent generates its next reply from these, right away. 1–4000
+  characters. Unlike `say`, the agent chooses the words.
+</ParamField>
+
+<ParamField body="allow_interruptions" type="boolean" default="true">
+  Whether the caller can talk over that reply.
+</ParamField>
+
+Both answer `202`:
+
+```json
+{
+  "accepted": true,
+  "control_id": "…",
+  "call_id": "…",
+  "op": "say",
+  "agent_identity": "…"
+}
+```
+
+`202` means the message was accepted, not that it was spoken. The agent applies
+it within a moment and records a `control.applied` [event](#events) with the same
+`control_id`, followed by the transcript of what it said.
+
+<Note>
+  Until the agent has joined (the `call.started` event), `say` and `instruct`
+  answer `409 agent_not_joined`. For something the agent must always say at the
+  start, use its greeting instead.
+</Note>
+
+### Listen in
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/calls/CALL_ID/listen-token" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+Returns a short-lived token for joining the call as a hidden listener: neither
+the caller nor the agent can see it, and it can neither speak nor send data.
+Pass `?identity=` to name the listener.
+
+<ResponseField name="server_url" type="string">Where to connect.</ResponseField>
+<ResponseField name="token" type="string">The listener's credential.</ResponseField>
+<ResponseField name="identity" type="string">The listener's identity.</ResponseField>
+<ResponseField name="room_name" type="string">The session's name.</ResponseField>
+<ResponseField name="call_id" type="string">The call.</ResponseField>
+<ResponseField name="expires_at" type="string">When the token stops being accepted.</ResponseField>
+
+<Note>
+  Listening in needs the same browser library as a web call, which is not
+  published yet. Contact [support](/getting-help) if you need it.
+</Note>
+
+## The call resource
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/calls/CALL_ID" -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+Besides `id`, `channel`, `status`, `agent_id` and `agent_version`, a call
+carries:
+
+| Field | What |
+| --- | --- |
+| `from_number`, `to_number`, `phone_number_id` | The numbers involved (phone calls) |
+| `customer`, `metadata`, `labels` | What you attached |
+| `campaign_id` | The [campaign](/voice-api/campaigns) that placed it, if any |
+| `schedule` | `earliest_at` and `latest_at`, for scheduled calls |
+| `created_at`, `started_at`, `answered_at`, `ended_at` | Timings |
+| `duration_s` | Length in seconds |
+| `disposition`, `end_reason_code`, `end_reason`, `end_reason_detail` | How it ended |
+| `analysis` | The post-call [analysis](/voice-api/agents#analysis), once it ran: `status` (`done`, `skipped`, `error`), `summary`, `success`, `structured_data` |
+
+Once the call has ended and its report is stored, `usage`, `recording`,
+`transfers` and `agent_path` (the agents the caller passed through) are filled
+in as well.
+
+### Changing a call
+
+`PATCH /api/v2/calls/{call_id}` replaces `labels` and/or `metadata`, in any
+status. Each one you send replaces the whole object, so send the complete
+object, not just the key you are changing.
+
+```bash
+curl -X PATCH "https://api.omnia-voice.com/api/v2/calls/CALL_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "labels": { "reviewed": "yes" } }'
+```
+
+### Deleting a call
+
+`DELETE /api/v2/calls/{call_id}` returns `204` and does one of two things:
+
+- On a `scheduled` call, cancels it (`end_reason_code` `cancelled`).
+- On an ended call, **permanently deletes the conversation**: its events,
+  report, collected values and recording results. The call itself stays, with
+  its timings, end reason, labels, metadata and customer, so your call
+  history stays complete.
+
+A call that is still running answers `409 call_active`. Hang it up first.
+
+## Listing calls
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/calls?agent_id=AGENT_ID&status=ended&limit=50" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+Newest first. The response is `{ "data": [...], "next_cursor": "…" }`; pass
+`next_cursor` back as `cursor` for the next page. It is `null` on the last page.
+
+<ParamField query="status" type="enum">
+  One of the [statuses](#statuses).
+</ParamField>
+<ParamField query="channel" type="enum">
+  `web`, `inbound` or `outbound`.
+</ParamField>
+<ParamField query="agent_id" type="string" />
+<ParamField query="campaign_id" type="string" />
+<ParamField query="phone_number_id" type="string" />
+<ParamField query="customer_number" type="string">
+  Exact `customer.number`, in E.164 form.
+</ParamField>
+<ParamField query="customer_external_id" type="string" />
+<ParamField query="created_at_gt" type="string">
+  Created strictly after this time (RFC 3339).
+</ParamField>
+<ParamField query="created_at_ge" type="string">
+  Created at or after this time. `created_after` is an older name for it.
+</ParamField>
+<ParamField query="created_at_lt" type="string">
+  Created before this time. `created_before` is an older name for it.
+</ParamField>
+<ParamField query="created_at_le" type="string">
+  Created at or before this time.
+</ParamField>
+<ParamField query="q" type="string">
+  Free-text search, any case, over the call id, phone numbers, agent id and the
+  customer's name, number, email and external id.
+</ParamField>
+<ParamField query="limit" type="integer" default="20">
+  1–100.
+</ParamField>
+<ParamField query="cursor" type="string" />
+
+## Events
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/calls/CALL_ID/events?limit=100" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+Everything that happened during the call, in order. Each event has `id`,
+`type`, `sequence`, `occurred_at` and `data`. Pages work like call lists
+(`limit` 1–500, default 100; `cursor` / `next_cursor`).
+
+Which events are recorded is set by the agent's `events.categories`. The
+defaults are `lifecycle`, `transcript`, `tool`, `handoff` and `error`; `state`,
+`usage`, `telephony` and `transcript_partial` are opt-in.
+
+| Category | Event types |
+| --- | --- |
+| `lifecycle` | `call.started`, `call.dialing`, `call.ringing`, `call.answered`, `call.analysis_ready`, `call.ended`, `call.silence_reprompt`, `call.amd_result`, `call.inbound_request_failed`, `recording.started`, `transfer.started`, `transfer.completed`, `control.applied` |
+| `transcript` | `transcript.item`, `agent.false_interruption` |
+| `transcript_partial` | `transcript.partial` |
+| `state` | `agent.state_changed`, `user.state_changed` |
+| `handoff` | `agent.handoff` |
+| `tool` | `tool.started`, `tool.completed`, `tool.updated` |
+| `telephony` | `dtmf.received` |
+| `usage` | `usage.updated` |
+| `error` | `error`, `recording.failed`, `transfer.failed` |
+
+<Warning>
+  `dtmf.received` carries the keys the caller pressed **unmasked**. Do not turn
+  on the `telephony` category for an agent that asks for PINs or card numbers
+  unless you need it.
+</Warning>
+
+<Tip>
+  To be told when a call ends instead of polling, register a
+  [webhook](/voice-api/webhooks). The live event stream is not available on API
+  v2; read `/events` after the fact.
+</Tip>
+
+## The report
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/calls/CALL_ID/report" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+The final record of the conversation, stored when the call ends. Alongside the
+call's outcome (`disposition`, `end_reason_code`) it holds:
+
+| Field | What |
+| --- | --- |
+| `transcript_text` | The conversation as plain text, one `AI:` or `User:` line per turn |
+| `messages_openai` | The same conversation as OpenAI-style chat messages, ready to pass to a model |
+| `analysis` | The post-call analysis result, when the agent defines one |
+| `usage` | Usage entries for the models the call ran on |
+| `recording` | When recording is on: `status` (`started`, `stopping`, `completed`, `failed`), and once `completed`, `location`, `duration_s` and `size_bytes` |
+| `transfers` | Transfers attempted and their results |
+| `agent_path` | The agents the caller passed through |
+
+Values the agent collected with a `collect` tool, and payloads of tools marked
+sensitive, are replaced with `[redacted]` in the report and in events. The model
+had the real values during the call; nothing stored afterwards does.
+
+<Note>
+  The report has no fixed schema in the API Reference: it grows as the engine
+  records more. Read the fields above, and ignore ones you do not recognise.
+</Note>
