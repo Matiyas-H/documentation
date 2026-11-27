@@ -1,0 +1,582 @@
+---
+title: "Tools"
+description: "Call your APIs, transfer, end the call, capture details, drive your web app, and keep credentials out of agent definitions."
+---
+
+A tool is something the agent can do mid-conversation besides talk: look up an
+invoice, transfer the caller to a person, hang up, capture a card number, show
+a form in your app. You describe the tool; the model decides when to use it.
+
+## How agents get tools
+
+Tools are defined once in the definition's `tools` list, and each agent lists
+the **names** of the tools it may call. An agent cannot call a tool it does not
+list, which is how a billing agent gets the payment tools and the front desk
+does not.
+
+```json
+{
+  "tools": [
+    { "type": "end_call" },
+    { "type": "transfer", "targets": [ { "name": "nurse", "destination": "tel:+358401234567", "description": "The on-call nurse, for anything medical." } ] }
+  ],
+  "agents": [
+    { "id": "main", "instructions": "...", "tools": ["end_call", "transfer"] }
+  ]
+}
+```
+
+A definition holds up to 128 tools. A tool can be written out in full (an
+**inline** tool, as above) or be a reference to a **workspace tool** stored once
+with `/api/v2/tools` and shared by many agents; see
+[Workspace tools](#workspace-tools).
+
+## Tool types
+
+| `type` | What it does | Offered on |
+| --- | --- | --- |
+| [`http`](#http-tools) | Calls your API | all calls |
+| [`transfer`](#transfer) | Passes the caller to a phone number or SIP address | phone calls |
+| [`end_call`](#end-call) | Says goodbye and hangs up | all calls |
+| [`send_dtmf`](#send-dtmf) | Presses keys on the line | phone calls |
+| [`collect`](#collect) | Captures a value such as an email address, a date of birth or a card number, and confirms it | all calls |
+| [`client_action`](#client-actions) | Asks your web app to do something, and can wait for its answer | web calls |
+| [`mcp`](#mcp-servers) | Every tool on an MCP server | all calls |
+| [`ref`](#workspace-tools) | A workspace tool, by id | |
+
+"Offered on" is each type's default `channels` (`inbound`, `outbound`, `web`).
+Set `channels` on a tool to narrow it; validation warns about a tool that would
+never be offered on the channels its agent is used on.
+
+### Fields most tools share
+
+<ResponseField name="name" type="string">
+  The function name the model sees: a letter, then letters, digits and
+  underscores, up to 64 characters. Agents list tools by this name.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  When to use the tool. This is the **only** thing the model goes on, so write
+  it as a trigger condition, not documentation: *"Look up an invoice. Use
+  whenever the caller gives an invoice number or asks how much they owe."* See
+  [The description is the trigger](/tools/overview#the-description-is-the-trigger).
+</ResponseField>
+
+<ResponseField name="on_duplicate" type="enum">
+  `http`, `collect` and `client_action` tools. What happens when the model calls
+  the tool again while an earlier call is still running: `allow` runs both,
+  `reject` refuses the new one, `replace` cancels the running one (cancellable
+  HTTP tools only), `confirm` makes the model check with the user first. Unset,
+  it is `reject` for [mutating](#tools-that-change-things) HTTP tools and `allow`
+  otherwise, so a nervous model cannot book the same appointment twice.
+  `duplicate_scope` (`name_and_args` by default, or `name`) decides what counts as
+  the same call.
+</ResponseField>
+
+<ResponseField name="available_during_greeting" type="boolean" default="true">
+  `false` hides the tool while the greeting is being written.
+</ResponseField>
+
+## HTTP tools
+
+An HTTP tool calls your API with arguments the model fills in, and hands the
+model your response.
+
+### Parameters
+
+`parameters` is a JSON Schema object describing the arguments, exactly like a
+function definition for any language model:
+
+```json
+"parameters": {
+  "type": "object",
+  "properties": {
+    "invoice_number": { "type": "string", "description": "The invoice number, digits only" }
+  },
+  "required": ["invoice_number"]
+}
+```
+
+Describe each property too: the model reads property descriptions to decide what
+to put in them.
+
+### The request
+
+`request` is the HTTP call the tool makes.
+
+| Field | Default | |
+| --- | --- | --- |
+| `url` | | Required. `http://` or `https://`, up to 2048 characters. |
+| `method` | `POST` | `GET`, `POST`, `PUT`, `PATCH` or `DELETE`. |
+| `query` | | Up to 20 query parameters, merged with the URL's own. A value that is exactly one `{{args.name}}` is left out when the model did not give that argument. |
+| `body_template` | | The JSON body. Without one, the arguments not used in the URL or query are sent as the body (`POST`, `PUT`, `PATCH`) or the query string (`GET`, `DELETE`). With one, only what the template uses is sent. |
+| `content_type` | `json` | `json`, or `form` for `application/x-www-form-urlencoded`. |
+| `headers` | | Up to 30 headers. |
+| `auth` | | Credentials. [Below](#authentication). |
+
+### Placeholders
+
+| Placeholder | Where | Filled |
+| --- | --- | --- |
+| `{{args.name}}` | `url`, `query`, `body_template` | When the tool runs, from the model's arguments. URL-encoded in the URL. |
+| `{{vars.name}}` | `url`, `query`, `body_template`, header values | When the call starts, from the call's [variables](/voice-api/agents#variables) |
+| `{{call.id}}`, `{{call.channel}}`, `{{call.caller_number}}`, `{{call.called_number}}` | `url`, `query`, `body_template` | When the call starts |
+| `{{secrets.NAME}}` | whole header values, `auth` | From your stored [secrets](#secrets) |
+
+In `body_template`, a string that is exactly one `{{args.name}}` keeps the
+argument's JSON type, so a number stays a number and a list stays a list.
+
+### Proxy or direct
+
+`mode` decides where the request is sent from.
+
+- **`proxy`** (default): the Omnia API sends it. Secrets are looked up on every
+  invocation, so rotating one takes effect on the next tool call, even in a call
+  that is already running. HMAC signing and OAuth 2.0 are available only here.
+- **`direct`**: sent from the voice session itself. Secrets are resolved when
+  the call starts, so a rotation applies to new calls.
+
+Use `proxy` unless you have a reason not to. Either way, a URL that resolves to
+a private or internal address is refused.
+
+### Authentication
+
+`request.auth` adds credentials. Every secret field takes either the value or,
+much better, a `{{secrets.NAME}}` reference.
+
+| `type` | Sends |
+| --- | --- |
+| `bearer` | `Authorization: Bearer <token>` |
+| `basic` | `Authorization: Basic base64(username:password)` |
+| `api_key` | `<name>: <value>` as a header, or `?<name>=<value>` with `location: "query"` |
+| `hmac` | `X-Timestamp` (Unix seconds) and `X-Signature`: the lowercase hex HMAC (`sha256` by default, or `sha512`) of `"<timestamp>.<raw body>"`. Proxy mode only. |
+| `oauth2_client_credentials` | `Authorization: Bearer <token>`, with the token fetched from `token_url` using `client_id` and `client_secret` (plus optional `scope` and `audience`), cached until shortly before it expires. A `401` from your API fetches a new token and retries once. Proxy mode only. |
+
+Setting a header in `headers` that `auth` also sets (such as `Authorization`
+with `bearer`) is rejected, because one of them would silently win.
+
+<Tip>
+  With `hmac`, verify the signature against the **raw** request body and reject
+  timestamps more than a few minutes old. Re-serialising the JSON before
+  checking changes the bytes and breaks the signature.
+</Tip>
+
+### What the model sees
+
+Without `response`, the model gets your response body. `response` shapes
+what it sees, in this order:
+
+1. **`redact`**: up to 50 JSON Pointers (`/customer/iban`) removed first.
+   Redacted fields never reach the model, the call's events or its report.
+2. **`extract`**: up to 20 named values picked with JSON Pointers
+   (`{"status": "/status"}`).
+3. **`template`**: the text the model sees, up to 2000 characters, with
+   `{{result.<name>}}` for extracted values.
+4. **`max_chars`** (default 4000, 100–16000): longer results are cut.
+
+Trimming the response is worth doing: a model reading three fields answers
+faster, and more accurately, than one reading a 40-field record.
+
+### When it fails
+
+`errors.messages` sets what the model is told when your API fails, so it can say
+something useful instead of guessing. Keys are an exact status (`"404"`), a
+class (`"4xx"`, `"5xx"`), `"timeout"` or `"default"`; the most specific match
+wins. Up to 20 messages of up to 300 characters.
+
+`errors.expose_body_path` (a JSON Pointer such as `/error/message`) appends the
+error detail from your response to the message.
+
+### Timeouts and retries
+
+`execution`:
+
+| Field | Default | |
+| --- | --- | --- |
+| `timeout_ms` | `10000` | Per attempt, 100–120000. |
+| `retries` | `0` | Extra attempts (0–3) after a `retry_on` status, a connection error or a timeout. |
+| `retry_on` | | Statuses to retry, 400–599, up to 10. `Retry-After` is honoured up to 5 s. |
+| `backoff_ms` | `300` | Delay before retry n is `backoff_ms × 2^(n-1)`, with jitter, at most 5 s (100–5000). |
+| `idempotency_header` | `Idempotency-Key` | Header carrying the invocation id, identical on every attempt. `null` sends none. |
+| `cancellable` | `false` | The model may cancel the call while it runs (read-only tools). |
+
+### Fillers and long-running tools
+
+A silent pause while your API works sounds like a dropped call.
+
+- **`execution.filler`** speaks `text` (up to 300 characters) if the tool is
+  still running after `delay_ms` (default 1500), and can repeat it every
+  `repeat_every_ms` (2000–60000), up to `max_repeats` times (1–10).
+- **`execution.mode: "async"`** is for work that takes longer than a
+  conversation can wait. The model is told `start_message` at once ("Quote
+  generation started") and the conversation carries on; the result reaches the
+  model when your API answers, and the agent tells the caller. Async tools need
+  a `start_message` and cannot have a filler.
+- **`execution.persist_across_handoff: true`** keeps an async tool running, and
+  delivers its result, after a [hand-off](/voice-api/agents#hand-offs). Every
+  agent must then list the tool, because the result can arrive while any of them
+  is talking.
+
+### Tools that change things
+
+Mark tools that create, book, pay or send with `execution.mutating: true`. A
+mutating tool cannot be interrupted once started, carries the idempotency
+header, and is retried only when that header is sent, so your API can recognise
+a repeat and not book twice.
+
+When a mutating tool times out, or fails after the request may already have been
+sent, the model is told the result could not be confirmed and not to call the
+tool again, so it tells the caller the result will be checked rather than
+trying a second time. Give mutating tools a realistic `timeout_ms`.
+
+### Sensitive data
+
+`"sensitive": true` marks a tool whose arguments and results contain personal
+data. The model still gets the real values during the call; the call's events,
+report and webhooks get masked copies, and error details are withheld.
+
+### A complete HTTP tool, with a secret
+
+<Steps>
+
+<Step title="Store the credential">
+
+```bash
+curl -X PUT "https://api.omnia-voice.com/api/v2/secrets/BILLING_API_TOKEN" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "value": "sk_live_...", "allowed_hosts": ["billing.example.com"], "scopes": ["tool"] }'
+```
+
+The value is never returned. The secret can now be used only by HTTP tools, and
+only towards `billing.example.com`.
+
+</Step>
+
+<Step title="Define the tool">
+
+```json lookup_invoice.json
+{
+  "type": "http",
+  "name": "lookup_invoice",
+  "description": "Look up an invoice by its number. Use whenever the caller gives an invoice number or asks how much they owe.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "invoice_number": { "type": "string", "description": "The invoice number, digits only" }
+    },
+    "required": ["invoice_number"]
+  },
+  "request": {
+    "url": "https://billing.example.com/v1/invoices/{{args.invoice_number}}",
+    "method": "GET",
+    "query": { "call": "{{call.id}}" },
+    "auth": { "type": "bearer", "token": "{{secrets.BILLING_API_TOKEN}}" }
+  },
+  "response": {
+    "redact": ["/customer/iban"],
+    "extract": { "status": "/status", "amount": "/amount_due", "due": "/due_date" },
+    "template": "Invoice status: {{result.status}}. Amount due: {{result.amount}} euros, due {{result.due}}."
+  },
+  "execution": {
+    "timeout_ms": 5000,
+    "retries": 2,
+    "retry_on": [502, 503, 504],
+    "filler": { "text": "One moment while I look that up.", "delay_ms": 1500 }
+  },
+  "errors": {
+    "messages": {
+      "404": "There is no invoice with that number. Ask the caller to read it out again.",
+      "5xx": "The billing system is not answering. Offer to take a message.",
+      "timeout": "The billing system is slow right now. Offer to call the caller back."
+    }
+  }
+}
+```
+
+</Step>
+
+<Step title="Give it to an agent">
+
+Put it in the definition's `tools` and add `"lookup_invoice"` to the agent's
+`tools`, or store it as a [workspace tool](#workspace-tools) and reference it.
+Then [validate](/voice-api/agents#validate-before-you-save): validation checks
+that `BILLING_API_TOKEN` exists, that its scope allows HTTP tools, and that
+`billing.example.com` is one of its allowed hosts.
+
+</Step>
+
+</Steps>
+
+## Transfer
+
+A `transfer` tool passes the caller to a person. The model sees one function
+per target, `transfer_to_<target name>`; agents list the tool by its own `name`
+(default `transfer`).
+
+| Field | Default | |
+| --- | --- | --- |
+| `targets` | | Required, 1–20. Each has a `name`, a `destination` (`tel:+<E.164>` or `sip:user@host`), a `description` of when to choose it, and an optional `failure_message`, said word for word if the transfer fails, after which the agent carries on helping. |
+| `mode` | `cold` | `cold` hands the call straight over. `warm` rings the person first and briefs them while the caller waits, then connects the two. |
+| `announcement` | | Said to the caller before a cold transfer, up to 500 characters. |
+| `cold` | | `play_dialtone`, `ringing_timeout_s` (default 30, 5–120), and up to 10 `X-` SIP `headers`. A target can override these with its own `cold`. |
+| `warm` | | `ringing_timeout_s`, `hold_audio` (a [clip](/voice-api/agents#audio) for the caller to hear; `null` for silence), `briefing_instructions` for what to tell the person, `caller_id`, and `X-` `headers`. |
+
+Warm transfers cost a little time but spare the person picking up from asking
+the caller to repeat everything.
+
+## End call
+
+`{"type": "end_call"}` lets the agent hang up. Without it, the call ends only
+when the caller hangs up or a [limit](/voice-api/agents#limits) is reached.
+
+| Field | Default | |
+| --- | --- | --- |
+| `description` | | Extra guidance on when to end the call, up to 1024 characters. |
+| `goodbye_instructions` | "Say a short, polite goodbye." | How the model says goodbye. |
+| `goodbye_text` | | An exact goodbye instead (up to 500 characters). It cannot be interrupted. |
+| `delay_ms` | `0` | Pause after the goodbye before hanging up (0–5000). |
+| `allowed_during_greeting` | `false` | |
+| `reasons` | | Up to 10 lowercase reason codes, such as `resolved` or `wrong_number`. The model must pick one, and it is recorded on the call as `end_reason_detail`, which makes "why did calls end?" a query rather than a transcript read. |
+
+The tool is registered as `end_call`; list it by that name.
+
+## Send DTMF
+
+`{"type": "send_dtmf"}` lets the model press keys on the line, for example to
+dial an extension in someone else's phone menu. It has no settings. To let the
+agent work through whole menus on outbound calls, see
+[`telephony.ivr_navigation`](/voice-api/agents#phone-menus-and-sip-headers).
+
+## Collect
+
+A `collect` tool runs a guided capture of one value, with confirmation, and
+stores it **encrypted**, with a masked preview (`j***@example.com`) everywhere
+the call is reported. It is the right tool for anything you would not want in a
+transcript.
+
+```json
+{
+  "type": "collect",
+  "name": "get_date_of_birth",
+  "field": "date_of_birth",
+  "description": "Capture the caller's date of birth once they agree to verify their identity.",
+  "return_value_to_llm": false
+}
+```
+
+| Field | Default | |
+| --- | --- | --- |
+| `field` | | Required: `email`, `address`, `phone_number`, `name`, `date_of_birth`, `credit_card` or `digits`. |
+| `description` | | Required. When to start the capture. |
+| `require_confirmation` | `true` | The agent reads the value back for the caller to confirm. |
+| `instructions` | | Extra guidance for the capture, up to 2048 characters. |
+| `return_value_to_llm` | `true` | `false` gives the model only the masked preview. The value is still stored. |
+| `require_explicit_ask` | `false` | Ask even if the caller already said it (`email`, `address`, `phone_number`, `name`, `date_of_birth`). |
+| `name_parts`, `verify_spelling` | | `name` only: which of `first`, `middle`, `last` to capture, and whether to have the caller spell it. |
+| `include_time` | `false` | `date_of_birth` only: capture the time of birth too. |
+| `num_digits` | | `digits` only, and required for it: 1–32. |
+| `dtmf_timeout_ms`, `stop_key` | `4000`, `#` | `digits` only: wait for the next key (1000–15000), and the key that ends input early. |
+
+An option on a field it does not apply to fails validation. Captured values
+reach you in the `collect.completed` [webhook](/voice-api/webhooks).
+
+## Client actions
+
+A `client_action` tool asks the web page the caller is using to do something:
+show a form, open a product, fill in a field. Your page handles the request
+under `rpc_method`, in the client it uses to join the
+[web call](/voice-api/calls#web-calls), and can send an answer back. Web calls
+only.
+
+| Field | Default | |
+| --- | --- | --- |
+| `rpc_method` | | Required. The method name your app handles (letters, digits, `_ . : -`, up to 128). |
+| `parameters` | | JSON Schema of the arguments, as for HTTP tools. |
+| `wait_for_response` | `true` | Wait for your app's answer and give it to the model. |
+| `timeout_ms` | `15000` | 500–120000. |
+| `payload_format` | `arguments` | `arguments` sends the arguments as JSON; `envelope` sends `{tool, invocation_id, call_id, arguments}`. |
+| `result_max_chars` | `4000` | Your app's answer is cut to this length (100–16000). |
+| `error_message` | | What the model is told when your app fails, times out or is not connected, up to 300 characters. Your app's own error text never reaches the model. |
+| `destination` | `first_user` | The call's web user, or `{"attribute": "...", "value": "..."}` for the participant whose attribute matches. |
+
+Payloads over 15 KiB are refused before they are sent.
+
+## MCP servers
+
+An `mcp` tool connects an MCP server and offers its tools to the agent as one
+toolset, under the tool's `name`.
+
+```json
+{
+  "type": "mcp",
+  "name": "calendar",
+  "url": "https://mcp.example.com/mcp",
+  "auth": { "type": "bearer", "token": "{{secrets.CALENDAR_MCP_TOKEN}}" },
+  "allowed_tools": ["find_slots", "book_slot"],
+  "tool_options": { "book_slot": { "on_duplicate": "reject" } }
+}
+```
+
+| Field | Default | |
+| --- | --- | --- |
+| `url` | | Required. |
+| `transport` | `streamable_http` | Or `sse`. |
+| `auth`, `headers` | | `bearer` or `api_key` auth, and up to 30 headers; secrets as `{{secrets.NAME}}` references with the `mcp` scope. |
+| `allowed_tools` | | Only these server tools are offered. Recommended: a server that adds a tool later should not silently hand it to your agent. |
+| `tool_options` | | Per server tool, up to 50: `cancellable`, `on_duplicate`, `duplicate_scope`, `report_progress`, `available_during_greeting`. With `allowed_tools` set, every key must be in it. |
+| `timeout_ms` | `30000` | Per tool call (1000–300000). |
+| `connect_timeout_ms`, `sse_read_timeout_ms` | `10000`, `300000` | |
+| `max_result_chars` | `4000` | Results are cut to this length (100–16000). |
+
+An MCP server on a private or internal address is refused when the call is
+created (`422 tool_destination_blocked`).
+
+## Workspace tools
+
+A tool you use in more than one agent belongs in the workspace: stored once,
+versioned, and referenced by id. Fix it once and every agent that references it
+gets the fix on its next call.
+
+```bash
+POST   /api/v2/tools                      # create: version 1
+GET    /api/v2/tools                      # list
+GET    /api/v2/tools/{tool_id}            # latest version (?version=N for another)
+PATCH  /api/v2/tools/{tool_id}            # a new tool is a new version
+GET    /api/v2/tools/{tool_id}/versions
+DELETE /api/v2/tools/{tool_id}
+```
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/tools" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"description\": \"Billing invoice lookup\", \"tool\": $(cat lookup_invoice.json)}"
+```
+
+- **`tool`** is any tool definition from this page. Its `name` must be unique
+  among the workspace's tools (`409 tool_name_exists`). Invalid tools are
+  refused with `422 invalid_tool`. You may pass your own `id`; `description` (up
+  to 1000 characters) and `metadata` are yours.
+- **`PATCH`** changes `description` and `metadata` in place. A new `tool` is a
+  new version. Renaming returns a `tool_renamed` warning naming the agents to
+  update, because agents list tools by name.
+- **`GET /api/v2/tools`** pages like agents (`limit`, `cursor`, `q`,
+  `created_at_*`) and filters by `type`.
+- **`DELETE`** answers `204`. While an agent's latest version references the
+  tool it answers `409 tool_in_use` with their ids. `?force=true` deletes anyway,
+  and those agents' calls then fail with `422 tool_not_found` until the reference
+  is removed.
+
+### Referencing a workspace tool
+
+Put a reference in the definition's `tools` and list the stored tool's **name**
+in the agents that use it:
+
+```json
+{
+  "tools": [
+    { "type": "ref", "tool_id": "tool_0192f3a1", "version": 3 },
+    { "type": "end_call" }
+  ],
+  "agents": [
+    { "id": "main", "instructions": "...", "tools": ["lookup_invoice", "end_call"] }
+  ]
+}
+```
+
+- **Omit `version`** to pick up the latest version on every new call. **Set
+  it** to freeze the tool, so an edit cannot change an agent you have tested.
+- References are resolved **when a call is created**, and the call keeps the
+  full tool. Editing or deleting the tool never changes a call already running.
+- A workspace tool can be referenced once per definition, and its name must not
+  clash with another tool in the definition (`tool_name_conflict`).
+
+## Importing tool definitions
+
+Already have tools written for OpenAI (chat or Responses) or Anthropic?
+`POST /api/v2/agents/normalize-tool` converts one into an `http` tool and
+validates it:
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/agents/normalize-tool" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool": {
+      "type": "function",
+      "function": {
+        "name": "lookup_invoice",
+        "description": "Look up an invoice by its number.",
+        "parameters": { "type": "object", "properties": { "invoice_number": { "type": "string" } }, "required": ["invoice_number"] }
+      }
+    }
+  }'
+```
+
+The response has the detected `format` (`openai_chat`, `openai_responses`,
+`anthropic` or `native`), the converted `tool`, and `valid`, `errors`,
+`warnings`. The conversion carries the name, description and parameters; add the
+`request` (and any `execution` or `response` settings) before you use it.
+
+## Secrets
+
+Secrets keep credentials out of agent definitions. Store a value once per
+workspace and reference it as `{{secrets.NAME}}`; the value is never returned by
+any endpoint, never written to logs, events or reports, and a call holds only the
+reference.
+
+```bash
+PUT    /api/v2/secrets/{name}     # create (201) or rotate (200)
+GET    /api/v2/secrets            # metadata of every secret
+GET    /api/v2/secrets/{name}     # metadata of one
+DELETE /api/v2/secrets/{name}     # 204
+```
+
+Names are uppercase letters, digits and `_`, starting with a letter, up to 64
+characters (`BILLING_API_TOKEN`). The `PUT` body:
+
+<ParamField body="value" type="string" required>
+  The secret. Write-only: no response ever contains it.
+</ParamField>
+
+<ParamField body="scopes" type="string[]">
+  Where it may be used: `tool` (HTTP tools), `mcp` (MCP servers), `provider`
+  (model `credentials`). At least one when given. Set it: a token for your CRM has
+  no business being usable as a model key.
+</ParamField>
+
+<ParamField body="allowed_hosts" type="string[]">
+  Up to 20 hosts the secret may be sent to (`api.example.com`, `*.example.com` or
+  an IP). A tool whose host is built from an argument never matches, so the model
+  cannot be talked into sending your token somewhere else. Not checked for model
+  credentials.
+</ParamField>
+
+Reads return metadata only: `name`, `reference` (the exact `{{secrets.NAME}}`
+text to paste), `version`, `scopes`, `allowed_hosts`, `created_at`, `rotated_at`
+and `last_used_at`.
+
+**Where references work.** The whole value of an HTTP tool header, the secret
+fields of `auth`, MCP server headers and `auth`, and model `credentials`. A
+reference anywhere else, or inside longer text (`"Bearer {{secrets.X}}"`), fails
+validation; use `auth` with `type: "bearer"` for that.
+
+**Rotation.** `PUT` the same name again; the response is `200` with the new
+`version`. Proxy-mode HTTP tools pick up the new value on their next invocation;
+direct HTTP tools, MCP servers and model credentials on the next call.
+
+<Warning>
+  `DELETE` removes every version at once. Calls that use the secret fail until it
+  is stored again, so rotate with `PUT` rather than deleting and re-creating.
+</Warning>
+
+**Errors.** Validation, and every call start, check references against your
+stored secrets: `missing_secret`, `secret_scope_denied` (used outside its
+scopes) and `secret_host_denied` (sent to a host not in `allowed_hosts`) are
+errors. A secret value written inline instead of referenced is an
+`inline_secret` warning, and comes back masked as `********` when you read the
+agent. Two simultaneous `PUT`s of the same name: one gets `409 secret_conflict`;
+retry it.
+
+See [Errors](/voice-api/errors) for the shape of error responses.

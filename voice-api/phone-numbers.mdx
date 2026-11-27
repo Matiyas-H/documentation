@@ -1,0 +1,380 @@
+---
+title: "Phone numbers and carriers"
+description: "Connect your carrier, put an agent on a number, and use it for inbound and outbound calls."
+---
+
+Phone calls need two things:
+
+1. A **carrier connection**: how calls travel between your phone carrier and
+   Omnia. You make one per carrier account.
+2. A **phone number** on that connection, with an agent on it. The agent answers
+   calls to the number and can place calls from it.
+
+You keep your numbers and your carrier contract; Omnia does not sell numbers.
+
+## Carrier connections
+
+`POST /api/v2/carrier-connections` takes one of two kinds, chosen by `provider`.
+
+<Tabs>
+
+<Tab title="Twilio (automatic)">
+
+Give Omnia your Twilio credentials and it configures your Twilio account to
+route the numbers' calls to Omnia. There is nothing to set up on the Twilio side.
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/carrier-connections" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "twilio",
+    "name": "Main Twilio account",
+    "account_sid": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "api_key_sid": "SKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "api_key_secret": "…"
+  }'
+```
+
+<ParamField body="provider" type="string" required>`twilio`</ParamField>
+<ParamField body="name" type="string" required>1–128 characters.</ParamField>
+<ParamField body="account_sid" type="string" required>
+  `AC` followed by 32 hex characters.
+</ParamField>
+<ParamField body="api_key_sid" type="string">
+  `SK` followed by 32 hex characters. Send it with `api_key_secret`.
+</ParamField>
+<ParamField body="api_key_secret" type="string" />
+<ParamField body="auth_token" type="string">
+  The account's auth token, instead of an API key.
+</ParamField>
+
+<Tip>
+  Prefer an API key (`api_key_sid` + `api_key_secret`) to the auth token. You can
+  revoke a key on its own; revoking the auth token breaks everything else that
+  uses the account.
+</Tip>
+
+The response has `carrier_setup: "automatic"`.
+
+</Tab>
+
+<Tab title="Generic SIP (manual)">
+
+For any other carrier or PBX. You tell Omnia where to send outbound calls; Omnia
+answers with the address and credentials your carrier sends inbound calls to.
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/carrier-connections" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "generic_sip",
+    "name": "Office PBX",
+    "outbound": {
+      "address": "sip.example-carrier.com:5060",
+      "transport": "tls",
+      "username": "omnia",
+      "password": "…"
+    },
+    "inbound_authentication": "digest"
+  }'
+```
+
+<ParamField body="provider" type="string" required>`generic_sip`</ParamField>
+<ParamField body="name" type="string" required>1–128 characters.</ParamField>
+<ParamField body="outbound" type="object" required>
+  Where outbound calls go:
+
+  - `address` (required): host name, optionally with `:port`, up to 255
+    characters. No `sip:` prefix.
+  - `transport`: `auto` (default), `udp`, `tcp` or `tls`.
+  - `username`, `password`: the credentials your carrier expects, if any.
+</ParamField>
+<ParamField body="inbound_authentication" type="enum" default="digest">
+  `digest`: your carrier must authenticate the calls it sends to Omnia with the
+  credentials in the response. `none`: no authentication.
+</ParamField>
+
+The response has `carrier_setup: "manual"` and what you configure at your
+carrier:
+
+<ResponseField name="inbound.sip_uri" type="string">
+  Where your carrier sends inbound calls.
+</ResponseField>
+<ResponseField name="inbound.recommended_transport" type="string">
+  `tcp`.
+</ResponseField>
+<ResponseField name="inbound_credentials" type="object">
+  `username` and `password` for digest authentication.
+</ResponseField>
+<ResponseField name="setup_instructions" type="array">
+  The steps to take at the carrier, in words.
+</ResponseField>
+
+<Warning>
+  `inbound_credentials` is returned **only in this response**. Later reads show
+  the username but never the password, so store it before you move on. If you
+  lose it, delete the connection and create a new one.
+</Warning>
+
+</Tab>
+
+</Tabs>
+
+<Warning>
+  Prefer `inbound_authentication: "digest"`. With `none`, anyone who learns the
+  SIP address can send calls to your agents, and those calls are billed to your
+  workspace.
+</Warning>
+
+### Reading and deleting connections
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/carrier-connections" -H "X-API-Key: $OMNIA_API_KEY"
+curl "https://api.omnia-voice.com/api/v2/carrier-connections/CONNECTION_ID" -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+A connection has `id`, `provider`, `name`, `status`, `carrier_setup`,
+`inbound` (`sip_uri`, `recommended_transport`, `authentication`, `username`),
+`outbound` (`address`, `transport`), `last_error`, `created_at` and
+`updated_at`. If calls stop arriving, look at `last_error` first.
+
+The list takes `limit` (1–200, default 50), `cursor`, `q` and the
+`created_at_gt` / `_ge` / `_lt` / `_le` filters, and answers
+`{ "data": [...], "next_cursor": … }`. It also repeats `data` as `items`;
+read `data`, as `items` is kept only for older clients.
+
+Connections cannot be edited, and a number cannot move from one connection to
+another. To switch, delete the number and add it again on the new connection.
+
+```bash
+curl -X DELETE "https://api.omnia-voice.com/api/v2/carrier-connections/CONNECTION_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+`204`. For an automatic Twilio connection this also removes the configuration
+Omnia made on your Twilio account. If that cleanup fails (for example because
+you already revoked the credentials), the delete fails rather than leave
+configuration behind unnoticed. Add `?force=true` to delete anyway, then tidy up
+the Twilio account yourself.
+
+### Numbers on the carrier account
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/carrier-connections/CONNECTION_ID/available-numbers" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+For a Twilio connection, lists the numbers in that Twilio account so you can
+pick the ones to add.
+
+<ResponseField name="e164" type="string">The number.</ResponseField>
+<ResponseField name="friendly_name" type="string">Its name in the carrier account.</ResponseField>
+<ResponseField name="provider_sid" type="string">The carrier's id for it.</ResponseField>
+<ResponseField name="voice_capable" type="boolean">
+  Whether it can carry calls. Numbers that cannot are of no use to an agent.
+</ResponseField>
+<ResponseField name="imported" type="boolean">Already added to Omnia.</ResponseField>
+<ResponseField name="attached_to_other_trunk" type="boolean">
+  Already routed to another SIP destination in the carrier account. Check what
+  handles its calls today before you add it to Omnia.
+</ResponseField>
+
+## Phone numbers
+
+### Add a number
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/phone-numbers" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "connection_id": "CONNECTION_ID",
+    "e164": "+358401234567",
+    "agent_id": "AGENT_ID",
+    "labels": { "timezone": "Europe/Helsinki" }
+  }'
+```
+
+<ParamField body="e164" type="string" required>
+  The number, in E.164 form. A number can be added once: the same number on two
+  connections, or in two workspaces, is refused.
+</ParamField>
+
+<ParamField body="connection_id" type="string">
+  The carrier connection the number belongs to.
+</ParamField>
+
+<ParamField body="twilio" type="object">
+  Instead of `connection_id`: Twilio credentials inline (`account_sid`, and
+  `auth_token` or `api_key_sid` + `api_key_secret`, optional `name`). The
+  connection for that account is created on first use and reused for later
+  numbers; `connection_created` in the response says whether this request
+  created it. The number must already be in that Twilio account.
+</ParamField>
+
+<ParamField body="agent_id" type="string">
+  The agent that answers. Add `agent_version` to pin a version; without it the
+  number always runs the agent's latest version.
+</ParamField>
+
+<ParamField body="inbound_enabled" type="boolean" default="true">
+  Accept calls to this number.
+</ParamField>
+
+<ParamField body="outbound_enabled" type="boolean" default="true">
+  Allow calls from this number.
+</ParamField>
+
+<ParamField body="inbound" type="object">
+  How inbound calls are accepted. See [Inbound settings](#inbound-settings).
+</ParamField>
+
+<ParamField body="overrides" type="object">
+  A partial [agent definition](/voice-api/agents) applied to every inbound call
+  to this number. One agent can then serve several numbers, each with its own
+  greeting or voice.
+</ParamField>
+
+<ParamField body="labels" type="object">
+  Up to 32 string tags (keys 1–64 characters, values up to 256). The label
+  `timezone`, when it holds a valid IANA zone, is the time zone of inbound
+  calls' date and time variables.
+</ParamField>
+
+The one-step form, for a Twilio number with no connection yet:
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/phone-numbers" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "e164": "+358401234567",
+    "twilio": { "account_sid": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "auth_token": "…" },
+    "agent_id": "AGENT_ID"
+  }'
+```
+
+The response is `201` with the number: `id`, `e164`, `connection_id`,
+`provider`, `provider_sid`, `agent_id`, `agent_version`, `inbound_enabled`,
+`outbound_enabled`, `status`, `labels`, `inbound`, `overrides`,
+`connection_created`, `created_at`, `updated_at`.
+
+### Change the agent
+
+`PATCH /api/v2/phone-numbers/{number_id}` changes only the fields you send.
+
+```bash
+# put another agent on the number
+curl -X PATCH "https://api.omnia-voice.com/api/v2/phone-numbers/NUMBER_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "agent_id": "AGENT_ID" }'
+
+# take the agent off
+curl -X PATCH "https://api.omnia-voice.com/api/v2/phone-numbers/NUMBER_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "agent_id": null }'
+```
+
+<Warning>
+  `inbound` and `overrides` are replaced **as a whole**. Sending
+  `{"inbound": {"allowed_callers": ["+358…"]}}` resets every other inbound
+  setting to its default. Read the number, change the field, send the complete
+  object back. `"overrides": {}` clears the overrides.
+</Warning>
+
+An agent that is on a phone number cannot be deleted (`409`). Move its numbers
+first; otherwise those numbers would silently stop answering.
+
+### List and remove numbers
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/phone-numbers?connection_id=CONNECTION_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+
+curl -X DELETE "https://api.omnia-voice.com/api/v2/phone-numbers/NUMBER_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+The list filters by `connection_id` and takes the same `limit` (1–200, default
+50), `cursor`, `q` and `created_at_*` parameters as connections. Like
+connections, it repeats `data` as `items`.
+
+`DELETE` returns `204`. The number stops reaching Omnia and, for a Twilio
+connection, is detached from the routing Omnia set up. The number stays yours in
+the carrier account.
+
+## Inbound
+
+A call to a number reaches its agent when the number is inbound-enabled, has an
+agent (or picks one by webhook, below) and the workspace has credit. Each such
+call becomes a [call](/voice-api/calls#inbound-calls) with `channel` `inbound`.
+
+When one of those is missing, the call is refused: the caller hears a short
+"not available" message, and the refusal is recorded with `end_reason_code`
+`rejected_inbound`. Test a number yourself after every change to it, because a
+refused call gives the caller no other sign of what went wrong.
+
+### Inbound settings
+
+The `inbound` object on a number:
+
+<ParamField body="allowed_callers" type="array">
+  Up to 100 E.164 numbers. When set, only these callers get through. Empty
+  (the default) accepts everyone.
+</ParamField>
+
+<ParamField body="max_call_duration_s" type="integer" default="3600">
+  Time limit of inbound calls, 60–14400 seconds.
+</ParamField>
+
+<ParamField body="hide_phone_number" type="boolean" default="false">
+  Hide the caller's number from the call's participant details.
+</ParamField>
+
+<ParamField body="include_headers" type="enum" default="x_headers">
+  Which SIP headers of the incoming call are kept: `none`, `x_headers` or
+  `all`. Kept `X-` headers can fill agent variables (the agent's
+  `telephony.attribute_variables`), which is how a PBX or contact centre hands
+  over a customer id.
+</ParamField>
+
+<ParamField body="media_encryption" type="enum" default="allow">
+  `disable`, `allow` or `require` encrypted media.
+</ParamField>
+
+<ParamField body="agent_source" type="enum" default="assigned">
+  `assigned`: the number's agent takes every call. `webhook`: before the call is
+  answered, Omnia asks your endpoint which agent takes it. See
+  [Webhooks](/voice-api/webhooks).
+</ParamField>
+
+<ParamField body="webhook_endpoint_id" type="string">
+  Required with `agent_source: "webhook"`: one of your active webhook endpoints.
+</ParamField>
+
+<ParamField body="fallback_destination" type="string">
+  `tel:+E164` or `sip:user@host`. Used with the agent-request webhook; see
+  [Webhooks](/voice-api/webhooks).
+</ParamField>
+
+<Note>
+  A number has one agent. To route by time of day, by menu choice or by caller,
+  either use `agent_source: "webhook"`, or give the agent hand-offs to other
+  agents or a transfer tool. See [Agents](/voice-api/agents) and
+  [Tools](/voice-api/tools).
+</Note>
+
+## Outbound
+
+A number with `outbound_enabled` can be the `from_number_id` of an
+[outbound call](/voice-api/calls#outbound-calls) or a
+[campaign](/voice-api/campaigns). The callee sees this number. When the request
+names no agent, the number's own agent makes the call.
+
+For a generic SIP connection, outbound calls go to the connection's `outbound`
+address with its credentials. If the number's connection is gone by the time a
+scheduled call is placed, that call fails with `start_failed`.

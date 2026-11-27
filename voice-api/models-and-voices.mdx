@@ -1,0 +1,424 @@
+---
+title: "Models and voices"
+description: "Find the speech-to-text, language and text-to-speech models for a language, pick a voice, and add backups."
+---
+
+A Voice API agent runs three models in a row: **speech-to-text** (`stt`) hears
+the caller, the **language model** (`llm`) decides what to say, and
+**text-to-speech** (`tts`) says it in a voice. Each slot in the agent
+definition's `models` names one model:
+
+```json
+{
+  "models": {
+    "stt": { "provider": "omnia", "model": "deepgram/nova-3", "language": "en" },
+    "llm": { "provider": "omnia", "model": "openai/gpt-4.1-mini" },
+    "tts": { "provider": "omnia", "model": "cartesia/sonic-3", "voice": "VOICE_ID", "language": "en" }
+  }
+}
+```
+
+`provider` is always `"omnia"`: the models run on Omnia, billed from your
+credits, with no provider account or key of your own. `model` says which one
+runs, as `vendor/model`. You never have to guess these ids; this page shows how
+to list them.
+
+There are two ways in:
+
+| | Start from | Use it for |
+| --- | --- | --- |
+| [**Catalogue**](#the-catalogue) `/api/v2/catalog/...` | A model | Every `stt`, `llm` and `tts` model, the languages each one supports, its options |
+| [**Voice directory**](#the-voice-directory) `/api/v2/voices` | A language | Every voice you can use, filterable by language, country and gender |
+
+Both are read-only, and any valid key can read them.
+
+## The catalogue
+
+| Request | Returns |
+| --- | --- |
+| `GET /api/v2/catalog/providers?kind=` | The providers and the kinds (`stt`, `llm`, `tts`) each offers |
+| `GET /api/v2/catalog/providers/{provider_id}` | One provider, with the model and voice ids and defaults per kind |
+| `GET /api/v2/catalog/models?kind=&provider=&q=` | A flat model search across providers |
+| `GET /api/v2/catalog/providers/{provider_id}/models?kind=&q=&include_retired=` | One provider's models, with languages, status and counts |
+| `GET /api/v2/catalog/providers/{provider_id}/languages?kind=&model=` | A model's languages, grouped by base language |
+| `GET /api/v2/catalog/providers/{provider_id}/options?kind=&model=` | The `options` a model accepts |
+| `GET /api/v2/catalog/providers/{provider_id}/voices?model=&language=&gender=&q=` | A `tts` model's voices, grouped by language |
+| `GET /api/v2/catalog/voices?provider=&language=&q=` | A flat voice list |
+
+`kind` is one of `stt`, `llm`, `tts`. For everything on this page,
+`provider_id` is `omnia`.
+
+<Note>
+  The provider list can include providers other than `omnia`. Those are used
+  with your own account at that provider: their entries say
+  `platform_configured: false`, and an agent that uses one needs `credentials`
+  in its model spec. If you just want the model to work, use `omnia`.
+</Note>
+
+### Picking a model for a language
+
+Work through it one slot at a time, in this order.
+
+<Steps>
+
+<Step title="List the models">
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/catalog/providers/omnia/models?kind=stt" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+```json
+{
+  "provider": "omnia",
+  "kind": "stt",
+  "total": 22,
+  "models": [
+    {
+      "id": "deepgram/nova-3",
+      "kind": "stt",
+      "name": "Nova-3",
+      "languages": [
+        { "code": "en", "name": "English" },
+        { "code": "multi", "name": "Multilingual (automatic)" }
+      ],
+      "multilingual": true,
+      "status": "active",
+      "status_note": null,
+      "replacement": null,
+      "is_default": false,
+      "default_voice": null,
+      "option_count": 25,
+      "voice_count": 0
+    }
+  ]
+}
+```
+
+The provider's default model comes first, then `active`, `preview` and
+`deprecated` ones. `retired` models are left out unless you add
+`include_retired=true`, which is only useful for finding out what an old agent
+was using. Filter by id or name with `q`.
+
+`id` is what goes in the spec's `model`.
+
+<Warning>
+  A `deprecated` model still works, but `status_note` says when it stops and
+  `replacement` names what to move to. Move before the date: a `retired` model
+  no longer runs, and validation flags it.
+</Warning>
+
+</Step>
+
+<Step title="Check the language">
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/catalog/providers/omnia/languages?kind=stt&model=deepgram/nova-3" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+```json
+{
+  "provider": "omnia",
+  "kind": "stt",
+  "model": "deepgram/nova-3",
+  "model_known": true,
+  "supported": true,
+  "multilingual": true,
+  "total": 84,
+  "groups": [
+    { "language": "multi", "name": "Multilingual (automatic)",
+      "variants": [{ "code": "multi", "name": "Multilingual (automatic)" }] },
+    { "language": "en", "name": "English",
+      "variants": [
+        { "code": "en", "name": "English" },
+        { "code": "en-AU", "name": "English (Australia)" },
+        { "code": "en-US", "name": "English (United States)" }
+      ] }
+  ]
+}
+```
+
+Put a variant's `code` in the spec's `language`. `multi` asks the model to
+detect the language itself, and appears only for models that can.
+
+- `supported: false` means the model does not take a language at all (language
+  models): leave `language` out.
+- `model_known: false` means the model id is not in the catalogue, and the
+  provider-wide list was returned instead.
+
+Do the same for `tts` with the text-to-speech model.
+
+</Step>
+
+<Step title="Pick a voice">
+
+For a `tts` model, list its voices for your language:
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/catalog/providers/omnia/voices?model=cartesia/sonic-3&language=en" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+The voices come grouped by language (`groups[].voices[]`), the default voice
+first in each group. Put a voice's `id` in the spec's `voice`. `language`
+matches regional variants (`en` also returns `en-US` voices), and `gender` and
+`q` narrow it further. `limit` (1 to 5000, default 500) and `offset` page the
+list **before** it is grouped, so a page's groups only cover that page.
+
+The catalogue only knows a few sample voices per model. For the full list,
+use the [voice directory](#the-voice-directory).
+
+</Step>
+
+<Step title="Set options, if you need them">
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/catalog/providers/omnia/options?kind=stt&model=deepgram/nova-3" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+```json
+{
+  "provider": "omnia",
+  "kind": "stt",
+  "model": "deepgram/nova-3",
+  "model_known": true,
+  "total": 25,
+  "groups": ["..."],
+  "options": [
+    {
+      "name": "keyterm",
+      "type": "string_list",
+      "description": "One or more terms to boost recognition accuracy for.",
+      "default": null,
+      "enum": null,
+      "minimum": null,
+      "maximum": null,
+      "group": "...",
+      "advanced": false
+    }
+  ]
+}
+```
+
+Values go in the spec's `options` object under their `name`, for example
+`"options": { "keyterm": ["Northside", "Virtanen"] }`. `type` is one of
+`string`, `integer`, `number`, `boolean`, `string_list` (a string or a list of
+strings), `object` or `array`; respect `enum`, `minimum` and `maximum`. Leave
+an option out to get the model's default.
+
+<Warning>
+  Option names are passed to the model exactly as written. A misspelt name is
+  not ignored: validation warns about it, and the call fails to start. Copy the
+  name from this list.
+</Warning>
+
+</Step>
+
+</Steps>
+
+Across providers, `GET /api/v2/catalog/models?kind=llm&q=gpt` searches every
+model by id or name, and each row has `provider`, `model`, `name`,
+`is_default`, `status` and `languages`. It is the quickest way to find the
+language model you want.
+
+The catalogue only changes when models are added or retired. Read it when you
+build or edit an agent, cache it on your side, not on every call.
+
+## The voice directory
+
+The directory is every voice you can use, kept up to date from the voice
+providers' own libraries. It starts from the language, which is usually how
+you choose a voice: "a female voice for German callers".
+
+| Request | Returns |
+| --- | --- |
+| `GET /api/v2/voices/languages` | Every language, with voice counts per locale and gender |
+| `GET /api/v2/voices?language=&country=&gender=` | Voices grouped by language, each group split by gender |
+| `GET /api/v2/voices/{voice_id}` | One voice, including one that is no longer available |
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/voices?language=de&gender=female&limit=20" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+```json
+{
+  "group_by": "language",
+  "total": 41,
+  "limit": 20,
+  "offset": 0,
+  "groups": [
+    {
+      "language": "de",
+      "name": "German",
+      "count": 20,
+      "locales": ["de-DE"],
+      "genders": [
+        {
+          "gender": "female",
+          "count": 20,
+          "voices": [
+            {
+              "id": "cartesia:VOICE_ID",
+              "provider": "cartesia",
+              "name": "...",
+              "description": "...",
+              "language": "de-DE",
+              "language_name": "German (Germany)",
+              "languages": ["de-DE"],
+              "country": "DE",
+              "gender": "female",
+              "tags": [],
+              "models": ["cartesia/sonic-3"],
+              "default_model": "cartesia/sonic-3",
+              "status": "active",
+              "available": true,
+              "featured": false
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "sync": { "stale": false, "interval_s": 86400, "providers": [] }
+}
+```
+
+Voices are shortened here. The filters:
+
+| Parameter | |
+| --- | --- |
+| `language` | A base language (`de`: every German locale) or a locale (`en-GB`) |
+| `country` | An ISO 3166 code, `US` |
+| `gender` | As in the voice's `gender` |
+| `provider` | The voice's own provider, as in its `provider` field |
+| `model` | Only voices that run on this `tts` model |
+| `q` | Free text |
+| `featured` | `true` for featured voices only |
+| `include_unavailable` | `true` to include removed and retired voices (default `false`) |
+| `group_by` | `language` (default) or `none` for a flat `voices` list |
+| `limit`, `offset` | 1 to 5000, default 2000. Paging happens before grouping |
+
+### Using a directory voice
+
+Take the voice's `id` and one of its `models`:
+
+```json
+{
+  "tts": {
+    "provider": "omnia",
+    "model": "cartesia/sonic-3",
+    "voice": "cartesia:VOICE_ID",
+    "language": "de"
+  }
+}
+```
+
+- `voice` is the directory `id` exactly as returned, including the part before
+  the colon.
+- `model` must be one the voice lists in `models`. `default_model` is a safe
+  choice. A voice on a model it does not run on fails validation, and the
+  message names the models that work.
+- `provider` is still `"omnia"`, not the voice's own `provider`. The voice's
+  `provider` field is only there to filter by.
+
+### Voices that go away
+
+Voice providers retire voices and models. The directory keeps them, so an
+agent that uses one can be flagged instead of failing silently:
+
+| What you see | Meaning | Effect |
+| --- | --- | --- |
+| `status: "deprecated"`, `retires_at` | The voice's models are being retired | Still works; validation warns, with the date |
+| `status: "retired"`, `available: false` | No model can play it any more | Validation fails; calls are refused with `422 voice_unavailable` |
+| `removed_at` set, `available: false` | The provider withdrew it | Validation fails; calls are refused with `422 voice_unavailable` |
+
+Unavailable voices are hidden from lists unless `include_unavailable=true`.
+`GET /api/v2/voices/{voice_id}` always returns them, which is how you find out
+why an existing agent stopped validating.
+
+<Tip>
+  Run [`POST /api/v2/agents/validate`](/voice-api/agents) on your stored agents
+  every so often. It warns about deprecated models and voices before the
+  retirement date, while you still have time to change them.
+</Tip>
+
+## Fallbacks
+
+Each slot can list up to **three** `fallbacks`: other models for the same job,
+in order of preference, used when the primary one cannot serve the call.
+A fallback takes the same fields as the slot itself (`provider`, `model`,
+`options`, and `language`, `voice`, `speed` or `temperature` as the kind
+allows), but cannot have fallbacks of its own.
+
+```json
+{
+  "models": {
+    "stt": {
+      "provider": "omnia", "model": "deepgram/nova-3", "language": "en",
+      "fallbacks": [
+        { "provider": "omnia", "model": "deepgram/flux-general-en", "language": "en" }
+      ]
+    },
+    "llm": {
+      "provider": "omnia", "model": "openai/gpt-4.1-mini",
+      "fallbacks": [{ "provider": "omnia", "model": "OTHER_LLM_MODEL_ID" }]
+    },
+    "tts": {
+      "provider": "omnia", "model": "cartesia/sonic-3.5", "voice": "cartesia:VOICE_ID", "language": "en",
+      "fallbacks": [
+        { "provider": "omnia", "model": "cartesia/sonic-3", "voice": "cartesia:VOICE_ID", "language": "en" }
+      ]
+    }
+  }
+}
+```
+
+Take the ids from the catalogue: a fallback is only useful if it is a model
+that actually exists and supports your language.
+
+<Warning>
+  Voices belong to particular models. Give every text-to-speech fallback a
+  `voice` that its own model supports, or the switch can change how the agent
+  sounds mid-call, or fail outright. The safest fallback is another model from
+  the same voice's `models` list, with the same `voice`.
+</Warning>
+
+## A different voice per agent
+
+When a definition has several agents with hand-offs between them, each agent
+can override the shared models in its own `models`: a different voice after
+the caller is passed to billing, or a stronger language model for one hard
+step. Only the slots you give change. See [Agents](/voice-api/agents).
+
+```json
+{
+  "agents": [
+    { "id": "reception", "instructions": "..." },
+    {
+      "id": "billing",
+      "instructions": "...",
+      "models": {
+        "tts": { "provider": "omnia", "model": "cartesia/sonic-3", "voice": "cartesia:OTHER_VOICE_ID", "language": "en" }
+      }
+    }
+  ]
+}
+```
+
+## Checking your choices
+
+`POST /api/v2/agents/validate` checks the models, their fallbacks and every
+per-agent override against the catalogue, and answers `200` with `valid`,
+`errors` and `warnings`. Warnings never block saving. They flag, among other
+things:
+
+- a model or voice id the catalogue does not know (fine for a brand-new model,
+  a typo otherwise)
+- a deprecated or retired model, with its replacement
+- a language the model does not list
+- a voice meant for a different model
+- an option the model does not document, or a value of the wrong type or out
+  of range

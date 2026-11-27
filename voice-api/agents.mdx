@@ -1,0 +1,677 @@
+---
+title: "Agents and the agent definition"
+description: "How a Voice API agent is stored and versioned, and what goes in its definition, section by section."
+---
+
+A Voice API agent is two things: a small **record** (a name, a description,
+your own metadata) and a **definition**, one JSON document that says everything
+about how calls run: the models, one or more agents with their instructions,
+the tools, and how the conversation, the phone line, recording and post-call
+analysis behave.
+
+The definition is **versioned**. Every change to it is saved as a new,
+immutable version, so a call that is running, or a phone number pinned to an
+older version, is never changed under its feet.
+
+## The stored agent
+
+<ResponseField name="id" type="string">
+  Generated for you, or your own: start with a letter or digit, then letters,
+  digits and `_ . : -`, up to 128 characters. `validate` and `normalize-tool` are
+  reserved. An id stays taken after its agent is deleted (`409 agent_exists`), so
+  a deleted agent's id can never silently point at a different agent.
+</ResponseField>
+
+<ResponseField name="name" type="string" required>
+  1–200 characters. Shown in the dashboard and on call records.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Up to 1000 characters, for your own reference. The model never sees it.
+</ResponseField>
+
+<ResponseField name="metadata" type="object">
+  Up to 20 keys of your own, each value a string of up to 256 characters.
+</ResponseField>
+
+<ResponseField name="definition" type="object" required>
+  The agent definition, described in the rest of this page.
+</ResponseField>
+
+<ResponseField name="version" type="integer">
+  The version this response shows. `latest_version` is the newest one and
+  `versions` how many exist.
+</ResponseField>
+
+<ResponseField name="warnings" type="array">
+  Returned when you create or update. The same warnings as
+  [validation](#validate-before-you-save); they never block saving.
+</ResponseField>
+
+## Lifecycle
+
+```bash
+POST   /api/v2/agents/validate        # check a definition, saves nothing
+POST   /api/v2/agents                 # create: version 1
+GET    /api/v2/agents                 # list
+GET    /api/v2/agents/{agent_id}      # read the latest version (?version=N for another)
+PATCH  /api/v2/agents/{agent_id}      # update; a new definition is a new version
+GET    /api/v2/agents/{agent_id}/versions
+DELETE /api/v2/agents/{agent_id}
+```
+
+All of them take your API key in `X-API-Key`. The key must belong to a workspace
+with the Voice API enabled; see [Voice API](/voice-api/overview).
+
+### Validate before you save
+
+`POST /api/v2/agents/validate` runs every check a save or a call would run, and
+saves nothing. It always answers **200**, with the result in the body, so an
+editor can show problems inline.
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/agents/validate" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"definition\": $(cat agent.json), \"channels\": [\"inbound\"]}"
+```
+
+```json
+{
+  "valid": false,
+  "errors": [
+    { "loc": ["models", "llm", "temperature"], "msg": "Input should be less than or equal to 2", "type": "less_than_equal" }
+  ],
+  "warnings": [
+    { "code": "tool_unused", "loc": ["tools", 1], "msg": "..." }
+  ]
+}
+```
+
+- **`errors`** would make the save fail. `loc` is the path inside the
+  definition. They include references that do not resolve: a stored tool or a
+  [secret](/voice-api/tools#secrets) that does not exist, or a secret used where
+  its scope or allowed hosts forbid it.
+- **`warnings`** do not block saving, but each one names something that will
+  probably not behave the way you meant: a model or voice the catalogue does not
+  know, a language the model does not list, an option the model does not take,
+  a tool no agent uses or that is never offered on the call's channels, a secret
+  written inline instead of referenced.
+- **`channels`** (optional: `web`, `inbound`, `outbound`) narrows the
+  channel-dependent checks to the channels you will actually use.
+
+<Tip>
+  Read the warnings, not just `valid`. An option the model does not accept
+  validates as a warning, but **fails the call when it starts**: the platform
+  refuses to silently ignore a setting you asked for.
+</Tip>
+
+### Create
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/agents" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\": \"Front desk\", \"definition\": $(cat agent.json)}"
+```
+
+`201` with the saved agent at `version` 1. A definition with errors is refused
+with `422 invalid_agent`, carrying the same `errors` and `warnings` as
+validation.
+
+### Update and versions
+
+`PATCH` changes only the fields you send.
+
+- `name`, `description` and `metadata` change **in place**.
+- A `definition` replaces the whole definition and becomes a **new version**.
+  Earlier versions stay available.
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/agents/AGENT_ID/versions" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+```json
+{ "data": [ { "version": 3, "created_at": "2026-11-20T09:14:02Z", "tool_ids": ["tool_0192f3a1"] } ] }
+```
+
+Versions are listed newest first, with the stored tools each one references.
+Read an old one with `GET /api/v2/agents/{agent_id}?version=2`.
+
+Calls run the **latest** version unless the call request passes
+`agent_version`. Phone numbers can pin a version the same way, which is how you
+change an agent without changing what your live number does until you are
+ready. See [Calls](/voice-api/calls) and [Phone numbers](/voice-api/phone-numbers).
+
+<Warning>
+  Secret values written straight into a definition (an inline API key, a
+  recording bucket key) come back masked as `********`. If you read an agent,
+  edit it and send the definition back, send the real values again, or the mask
+  is what you save. Use [secret references](/voice-api/tools#secrets) wherever
+  the field accepts one, so there is nothing to resend.
+</Warning>
+
+### List and delete
+
+`GET /api/v2/agents` pages with `limit` (1–100, default 20) and `cursor` (pass
+back `next_cursor` until it is `null`). Filter with `q` (name contains, any case)
+and `created_at_gt`, `created_at_lt`, `created_at_ge`, `created_at_le`.
+
+`DELETE /api/v2/agents/{agent_id}` answers `204`. While phone numbers are
+assigned to the agent it answers `409 agent_in_use` with their ids, because
+deleting it would leave those numbers with nobody to answer.
+`?force=true` unassigns them and deletes anyway. A deleted agent returns `404`,
+and calls naming it fail.
+
+## The definition at a glance
+
+| Section | Required | What it holds |
+| --- | --- | --- |
+| [`models`](#models) | yes | Speech-to-text, language model, text-to-speech, voice activity detection |
+| [`entry_agent`](#agents) | yes | The `id` of the agent that starts every call |
+| [`agents`](#agents) | yes | 1–20 agents: instructions, greeting, tools, hand-offs |
+| [`tools`](/voice-api/tools) | | Up to 128 tools the agents can use |
+| [`conversation`](#conversation) | | Turn-taking, interruptions, silence |
+| [`limits`](#limits) | | Maximum call duration |
+| [`variables`](#variables) | | Values filled in per call |
+| [`telephony`](#telephony) | | Voicemail, keypad input, phone menus |
+| [`recording`](#recording) | | Call recording, optionally to your own storage |
+| [`analysis`](#analysis) | | Summary, success verdict and structured data after the call |
+| [`web`](#web) | | Browser-call behaviour |
+| [`events`](#events) | | Which call events are recorded |
+| [`audio`](#audio) | | Noise cancellation and background sound |
+
+Unknown fields are rejected rather than ignored, so a misspelt setting fails
+validation instead of quietly doing nothing.
+
+### A minimal definition
+
+```json agent.json
+{
+  "models": {
+    "stt": { "provider": "omnia", "model": "deepgram/nova-3", "language": "en" },
+    "llm": { "provider": "omnia", "model": "openai/gpt-4.1-mini" },
+    "tts": { "provider": "omnia", "model": "cartesia/sonic-3", "language": "en" }
+  },
+  "entry_agent": "main",
+  "agents": [
+    {
+      "id": "main",
+      "instructions": "You answer calls for Northside Dental. Give opening hours (Monday to Friday, 8 to 16) and take a message for anything else. Keep answers to one or two sentences."
+    }
+  ]
+}
+```
+
+Everything else has a default. This agent greets with a generated greeting,
+detects turns with the end-of-turn model, reprompts a silent caller, and keeps
+no recording.
+
+## Agents
+
+`agents` holds 1–20 agents; `entry_agent` names the one that starts every call.
+Each agent is a separate set of instructions, tools and, optionally, models.
+Splitting a long flow into agents keeps each prompt short and focused, which
+models follow far more reliably than one prompt that tries to cover everything.
+
+| Field | |
+| --- | --- |
+| `id` | Required. Letters, digits and `_ . : -`, up to 128 characters. Hand-offs and `entry_agent` use it. |
+| `name` | Up to 100 characters. |
+| `instructions` | Required, 1–60,000 characters. The agent's system prompt. |
+| `context` | Up to 4000 characters of background (account details, case notes) added to the conversation when this agent takes over. [Variables](#variables) are filled in. |
+| `greeting` | How the agent opens. [Below](#greeting). |
+| `tools` | Up to 128 tool **names** from the definition's `tools`. An agent can only call tools it lists. |
+| `handoffs` | Up to 20 agents this one may pass the conversation to. [Below](#hand-offs). |
+| `models` | Per-agent `stt`, `llm` or `tts`, replacing the definition's for this agent, for example a different voice after a hand-off. |
+| `conversation` | Per-agent `turn_detection`, `endpointing`, `interruptions_enabled`, `interruption_mode`, `preemptive_generation`, `preemptive_max_speech_duration_s`. |
+
+### Greeting
+
+| Field | Default | |
+| --- | --- | --- |
+| `mode` | `generate` | `say` speaks `text` word for word, `generate` lets the model write it, `none` says nothing. |
+| `text` | | The exact greeting for `say`, up to 2000 characters. |
+| `instructions` | | Guidance for `generate`, up to 4000 characters. Without it, the agent's instructions are used. |
+| `first_speaker` | `auto` | `auto`: the agent speaks first on web and inbound calls, the person who answers speaks first on outbound calls. Or `agent`, or `user`. |
+| `user_silence_fallback_ms` | `3000` | When the user should speak first and does not, the agent greets after this long (500–15000). `null` waits for ever. |
+| `delay_ms` | `0` | Wait before greeting (0–10000). A user who speaks during the delay is answered instead. |
+| `allow_interruptions` | `false` | Whether the caller can talk over the greeting. |
+| `tool_choice` | `none` | `auto` lets the model call tools while writing the greeting. |
+| `add_to_history` | `true` | `false` keeps the greeting out of what the model sees (it is still spoken and transcribed). |
+
+<Note>
+  `auto` exists because outbound calls are different: the person answering says
+  "hello" first, and an agent that talks over them sounds like a robocall.
+</Note>
+
+### Hand-offs
+
+A hand-off lets the model pass the conversation to another agent in the same
+definition, the way a receptionist puts you through to billing.
+
+| Field | Default | |
+| --- | --- | --- |
+| `to` | | Required. The target agent's `id`. |
+| `description` | | Required, 1–1024 characters. **When** to hand over. The model reads it exactly like a tool description, so name the situations and phrasings that should trigger it. |
+| `on_enter` | `auto` | What the new agent does first: `greeting` (its own greeting), `continue` (replies to the conversation so far), `silent` (waits for the user). `auto` uses its greeting, or stays silent if its greeting `mode` is `none`; going back to an agent that already spoke continues. |
+| `history` | `full` | What the new agent sees: `full`, `messages` (user and agent messages only, no tool calls), `last_n` (with `history_max_items`, 2–200), `summary` (a model-written summary; falls back to `messages` if it fails), or `none`. |
+| `summary_instructions` | | How to summarise for `history: "summary"`, up to 2000 characters. |
+| `announcement` | | Said to the caller as the hand-off happens, up to 500 characters. |
+
+<Tip>
+  `full` is the safe default. Use `summary` or `last_n` when the conversation
+  before the hand-off is long or tool-heavy and the next agent only needs the
+  gist: a smaller context is cheaper, faster, and easier for the model to follow.
+</Tip>
+
+### Two agents with a hand-off
+
+```json
+{
+  "models": {
+    "stt": { "provider": "omnia", "model": "deepgram/nova-3", "language": "en" },
+    "llm": {
+      "provider": "omnia",
+      "model": "openai/gpt-4.1-mini",
+      "temperature": 0.3,
+      "fallbacks": [{ "provider": "omnia", "model": "openai/gpt-4.1" }]
+    },
+    "tts": {
+      "provider": "omnia",
+      "model": "cartesia/sonic-3",
+      "voice": "cartesia:db6b0ed5-d5d3-463d-ae85-518a07d3c2b4",
+      "language": "en"
+    }
+  },
+  "variables": {
+    "customer_name": { "default": "there", "description": "First name from the CRM" }
+  },
+  "entry_agent": "front_desk",
+  "agents": [
+    {
+      "id": "front_desk",
+      "name": "Front desk",
+      "instructions": "You are the front desk of Northside Dental. Today is {{weekday}} {{date}}. Answer questions about opening hours and directions. Anything about invoices, payments or insurance goes to billing.",
+      "greeting": {
+        "mode": "say",
+        "text": "Hi {{customer_name}}, Northside Dental, how can I help?"
+      },
+      "tools": ["end_call"],
+      "handoffs": [
+        {
+          "to": "billing",
+          "description": "The caller asks about an invoice, a payment, a refund or insurance.",
+          "history": "summary",
+          "announcement": "Let me pass you to billing."
+        }
+      ]
+    },
+    {
+      "id": "billing",
+      "name": "Billing",
+      "instructions": "You handle billing questions for Northside Dental. Confirm the caller's full name before discussing any amount. If they need a person, transfer them to the billing office.",
+      "greeting": { "mode": "generate", "instructions": "Introduce yourself as billing and ask what the question is about." },
+      "tools": ["transfer", "end_call"],
+      "handoffs": [
+        { "to": "front_desk", "description": "The caller has a question that is not about billing." }
+      ],
+      "models": {
+        "tts": {
+          "provider": "omnia",
+          "model": "cartesia/sonic-3",
+          "voice": "cartesia:a0e8430e-1267-4a4d-baa5-a5d5e53122a9",
+          "language": "en"
+        }
+      }
+    }
+  ],
+  "tools": [
+    {
+      "type": "transfer",
+      "targets": [
+        {
+          "name": "billing_office",
+          "destination": "tel:+358401234567",
+          "description": "A person in the billing office, during office hours.",
+          "failure_message": "I couldn't reach the billing office. Can I take a message instead?"
+        }
+      ]
+    },
+    { "type": "end_call", "reasons": ["resolved", "caller_request"] }
+  ],
+  "conversation": {
+    "silence": { "user_away_timeout_s": 10, "max_reprompts": 1 },
+    "keyterms": ["Northside", "Kela"]
+  },
+  "limits": { "max_duration_s": 900, "warning_before_s": 60 },
+  "telephony": {
+    "voicemail": {
+      "on_voicemail": "leave_message",
+      "message": "Hi {{customer_name}}, this is Northside Dental. Please call us back on 09 123 4567."
+    }
+  },
+  "analysis": {
+    "summary": { "max_words": 80 },
+    "success": { "enabled": true, "rubric": "pass_fail", "instructions": "The caller's question was answered or handed to a person." },
+    "structured_data": [
+      {
+        "name": "billing_issue",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "topic": { "type": "string", "enum": ["invoice", "payment", "refund", "insurance", "other"] },
+            "needs_callback": { "type": "boolean" }
+          },
+          "required": ["topic"]
+        }
+      }
+    ]
+  }
+}
+```
+
+The billing agent speaks with a different voice, so the caller hears that they
+have been passed on. Voice ids come from `GET /api/v2/voices`; see
+[Models and voices](/voice-api/models-and-voices).
+
+## Models
+
+`models` says which models run. `llm` is required; a voice agent needs `stt` and
+`tts` as well.
+
+| Section | Fields |
+| --- | --- |
+| `stt` | `provider`, `model`, `language`, `options`, `fallbacks` |
+| `llm` | `provider`, `model`, `temperature` (0–2), `max_output_tokens` (up to 32,000), `options`, `fallbacks` |
+| `tts` | `provider`, `model`, `voice`, `language`, `speed` (above 0, up to 4), `options`, `fallbacks` |
+| `vad` | Voice activity detection. [Below](#conversation). |
+
+- **`provider`** is `"omnia"`. The **`model`** id says which model runs, for
+  example `deepgram/nova-3`, `openai/gpt-4.1-mini` or `cartesia/sonic-3`. List
+  what is available with the catalogue routes in
+  [Models and voices](/voice-api/models-and-voices).
+- **`fallbacks`** holds up to three backup models of the same kind, for when the
+  primary one fails. A call that would otherwise drop because one provider has
+  an outage carries on with the next model.
+- **`options`** are model-specific settings, listed per model by the catalogue.
+  Validation warns about options the model does not document; the call itself
+  refuses them.
+- **`credentials`** is for a provider in the catalogue that needs your own
+  account rather than the platform's. Put the key in a
+  [secret](/voice-api/tools#secrets) and reference it as `{{secrets.NAME}}`.
+
+## Conversation
+
+`conversation` decides when the caller has finished speaking, what happens when
+they talk over the agent, and what happens when they go quiet. The defaults suit
+most phone calls; change them when a specific problem shows up.
+
+### Turn-taking
+
+| Field | Default | |
+| --- | --- | --- |
+| `turn_detection` | `model` | How the end of the caller's turn is detected. `model`: an end-of-turn model judges from what was said whether they are done, so a pause mid-sentence does not cut them off. `vad`: silence alone ends the turn. `stt`: the speech-to-text model's own end-of-speech signal. |
+| `endpointing` | | `mode` (`fixed` or `dynamic`), `min_delay_ms` (0–10000) and `max_delay_ms` (100–30000): how long to wait after speech before answering. Unset fields keep a default that depends on the turn detection. |
+| `preemptive_generation` | on | Start writing the reply before the turn is confirmed finished, which cuts the pause before the agent answers. |
+| `keyterms` | | Up to 100 words to boost in speech recognition: names, products, places. |
+| `max_tool_steps` | `3` | How many rounds of tool calls the model may make for one reply (1–20). |
+
+<Tip>
+  If callers are cut off while they think, raise `endpointing.min_delay_ms`
+  before anything else. If the agent is slow to answer, check that
+  `turn_detection` is `model`: silence-only detection has to wait longer to be
+  sure.
+</Tip>
+
+### Interruptions
+
+`conversation.interruptions`:
+
+| Field | Default | |
+| --- | --- | --- |
+| `enabled` | `true` | Whether the caller can talk over the agent. |
+| `mode` | | `adaptive` tells a real interruption from a backchannel ("mm-hmm", "right") so the agent does not stop for every acknowledgement. `vad` treats any speech as an interruption. |
+| `min_duration_ms` | `500` | Speech shorter than this (0–5000) does not interrupt. |
+| `min_words` | `0` | Words needed to interrupt (0–20). |
+| `resume_false_interruptions` | `true` | If the "interruption" turns out to be noise, the agent picks up where it left off. |
+| `false_interruption_timeout_ms` | `2000` | How long to wait before deciding an interruption was false. |
+
+### Silence and long turns
+
+`conversation.silence`:
+
+| Field | Default | |
+| --- | --- | --- |
+| `user_away_timeout_s` | `15` | Silence (3–600 s) after which the agent checks the caller is still there. `null` turns reprompts off. |
+| `reprompt_instructions` | "The user has gone quiet. Briefly and politely check whether they are still there." | What the reprompt should say. |
+| `max_reprompts` | `2` | Reprompts before giving up (0–10). |
+| `hangup_after_reprompts` | `true` | Hang up, with `goodbye_message`, after the last reprompt. |
+| `goodbye_message` | "It seems we got disconnected. Goodbye!" | |
+| `hangup_after_s` | | A hard stop (30–3600 s) on continuous silence from the caller, whatever the reprompts. Time the agent spends thinking or running tools does not count. |
+
+`conversation.user_turn_limit` lets the agent cut in politely on a caller who
+talks for a long time without a pause (`max_words`, `max_duration_s`,
+`on_exceeded`, `instructions`). `transcription_timeout_s` (1–30) makes the agent
+ask the caller to repeat when they spoke but nothing could be transcribed.
+
+### Voice activity detection
+
+`models.vad` detects speech in the audio. The defaults work on ordinary lines.
+On noisy ones (a car, a shop floor), raise `activation_threshold` (default `0.5`,
+between 0 and 1) so background noise is not taken for speech.
+`min_silence_duration_ms` is at least 250.
+
+## Limits
+
+`limits` caps how long a call can last, with a spoken warning first.
+
+| Field | Default | |
+| --- | --- | --- |
+| `max_duration_s` | | 30–14400 s, counted from when the call is answered. If the call request sets its own limit, the smaller one wins. |
+| `warning_before_s` | `60` | Warn the caller this long before the limit (10–600). `null` skips the warning. |
+| `warning_instructions` | | What the warning should say. |
+| `goodbye_text` | "We've reached the time limit for this call. Thank you, goodbye!" | Said word for word at the limit. |
+
+## Variables
+
+Variables put per-call values into the agent: write `{{name}}` in instructions,
+`context`, greetings, and every other text the agent speaks (reprompts,
+goodbyes, voicemail messages, announcements, filler messages). In HTTP tool
+requests, use `{{vars.name}}` instead; see [Tools](/voice-api/tools#placeholders).
+
+Declare them in `variables`, up to 100, names of letters, digits and `_`:
+
+```json
+"variables": {
+  "customer_name": { "default": "there", "description": "First name from the CRM" },
+  "account_id": { "required": true }
+}
+```
+
+| Field | |
+| --- | --- |
+| `default` | Used when the call passes no value. Up to 4000 characters. |
+| `required` | A web or outbound call without a value (and no default) is refused. |
+| `description` | For your own reference. |
+
+Values are passed in `variables` when you start a call
+(see [Calls](/voice-api/calls)). Later sources win: built-ins, then declared
+defaults, then the values passed with the call.
+
+**Built-ins** are always there and cannot be declared:
+
+| Variable | Value |
+| --- | --- |
+| `call_id`, `channel` | The call id; `web`, `inbound` or `outbound` |
+| `caller_number`, `called_number` | E.164 numbers when known, otherwise empty |
+| `now_iso` | Local date and time, for example `2026-09-15T14:05:00+03:00` |
+| `date`, `time`, `weekday` | `2026-09-15`, `14:05`, `Tuesday` |
+| `timezone` | IANA zone name, for example `Europe/Helsinki` |
+| `agent_id`, `agent_version` | The stored agent's id and version |
+
+Dates and times are in the call's time zone: the one passed with a web or
+outbound call, the phone number's `timezone` label for inbound calls, otherwise
+UTC.
+
+<Warning>
+  Once you declare **any** variable, every placeholder in the definition must be
+  declared or built-in. A web or outbound call that leaves one without a value is
+  refused with `422 missing_variable`, listing the names. Inbound calls cannot
+  pass values, so declared variables fall back to their default or an empty
+  string, and the call is refused only if a `required` variable has no default.
+  Give required variables a default if the agent answers a phone number.
+</Warning>
+
+Write `\{{name}}` to get a literal `{{name}}` in the text. Values are inserted as
+they are; placeholders inside values are never expanded.
+
+## Telephony
+
+`telephony` applies to phone calls.
+
+### Voicemail
+
+`telephony.voicemail` detects answering machines on the calls you place.
+
+| Field | Default | |
+| --- | --- | --- |
+| `detect` | `true` | |
+| `on_voicemail` | `hangup` | `hangup`, `leave_message`, or `continue` as if a person answered. |
+| `message` | | The message to leave (`message_mode: "say"`) or instructions for writing it (`"generate"`). Up to 2000 characters. |
+| `on_uncertain` | `continue` | When detection cannot tell a person from a machine: `continue` or `hangup`. |
+| `timeout_s` | `20` | The longest detection may take (5–60). |
+| `wait_for_beep_ms` | `0` | Extra pause after the greeting before leaving the message, for slow beeps (0–10000). |
+
+### Keypad input
+
+`telephony.dtmf_input` lets callers type on the keypad. Off by default.
+
+| Field | Default | |
+| --- | --- | --- |
+| `enabled` | `false` | |
+| `terminator` | `#` | Key that ends a sequence at once: `#`, `*` or `null`. |
+| `inter_digit_timeout_ms` | `2000` | A sequence also ends after this long without a key (500–10000). |
+| `max_digits` | `32` | 1–64. |
+| `interrupt_agent` | `true` | Stop the agent's current sentence when a sequence arrives. |
+
+The agent receives a sequence as the user message `[keypad] 1234`. Say so in its
+instructions ("When the caller types their customer number, it arrives as
+`[keypad]` followed by the digits"), or it will not know what the message means.
+
+<Warning>
+  Keypad digits are recorded in call events exactly as typed. The `telephony`
+  event category that records them is switched on automatically when keypad
+  input is enabled and you have not set `events.categories` yourself. For PINs
+  and card numbers, use a
+  [`collect` tool](/voice-api/tools#collect), which stores the value encrypted
+  and masks it everywhere else.
+</Warning>
+
+### Phone menus and SIP headers
+
+- **`ivr_navigation`** (default `false`) lets the agent find its way through an
+  automated phone menu by pressing keys. On outbound calls with voicemail
+  detection, it switches on once detection reports a menu.
+- **`attribute_variables`** fills declared variables on inbound calls from the
+  caller's SIP attributes, up to 20, for example
+  `{"crm_id": "sip.h.x-crm-id"}` for the `X-CRM-Id` header. A missing attribute
+  leaves the variable's default.
+
+## Recording
+
+`recording` is off by default.
+
+| Field | Default | |
+| --- | --- | --- |
+| `enabled` | `false` | |
+| `file_format` | `ogg` | `ogg` or `mp3`. |
+| `channels` | `dual` | `dual` puts the agent and the caller on separate channels, which makes the recording far easier to analyse. `mixed` is one channel. |
+| `filepath` | `{tenant_id}/{call_id}` | The file name without extension, up to 512 characters. |
+| `storage` | | Your own bucket. Below. |
+| `consent_message` | | Spoken before anything else when recording is on, up to 1000 characters. |
+
+The recording's status and location appear on the call; see
+[Calls](/voice-api/calls).
+
+**Your own storage.** `storage` sends the file to a bucket you own. `kind` is
+`s3` (`bucket`, `region`, `endpoint`, `force_path_style`, and `access_key` +
+`secret_key` or `assume_role_arn` + `assume_role_external_id`), `gcs` (`bucket`,
+`credentials_json`) or `azure` (`account_name`, `account_key`, `container`).
+
+<Warning>
+  The storage keys (`access_key`, `secret_key`, `session_token`,
+  `credentials_json`, `account_key`) are **write-only**: they are accepted but
+  never returned, and they take the value itself, not a secret reference. Because
+  a read-modify-write would send the mask back, resend them on every update. On
+  S3, an assumed role avoids storing a long-lived key in the definition at all.
+</Warning>
+
+Laws on recording calls differ by country, and many require you to tell the
+caller. `consent_message` is the simple way to do that.
+
+## Analysis
+
+`analysis` runs once, over the finished transcript, before the call's report is
+written. It is off by default; `"analysis": {}` turns on the summary alone.
+
+| Field | Default | |
+| --- | --- | --- |
+| `summary` | on | `enabled`, `max_words` (default 120, 20–600), `instructions`. A short factual summary. |
+| `success` | off | `enabled`, `rubric`, `instructions`. `pass_fail` gives a verdict; `numeric_scale` a score up to `scale_max` (default 10, 2–100); `checklist` checks up to 20 items. `pass_threshold` sets the pass mark for the last two. |
+| `structured_data` | | Up to 3 named objects the model fills from the conversation. Each has a `name` (lowercase letters, digits, `_`), a JSON Schema `schema`, and optional `instructions`. |
+| `min_messages` | `2` | Skip the analysis for calls with fewer user and agent messages (0–100), so a wrong number does not get a summary. |
+| `timeout_s` | `20` | Time budget for the analysis (5–60). |
+| `model` | the definition's `llm` | A different model for the analysis. |
+
+The result is on the call (`GET /api/v2/calls/{call_id}`) and in the call-ended
+webhook. See [Calls](/voice-api/calls) and [Webhooks](/voice-api/webhooks).
+
+<Note>
+  The analysis sees the same masked transcript as everyone else: values captured
+  by `collect` tools and the payloads of tools marked `sensitive` never reach it.
+</Note>
+
+## Web
+
+`web` applies to calls in the browser.
+
+| Field | Default | |
+| --- | --- | --- |
+| `text_input` | `true` | The user can type as well as speak. |
+| `transcription_output` | `true` | Live transcripts are sent to the page. |
+| `audio_output` | `true` | `false` makes a text-only agent with no voice. |
+| `tts_aligned_transcript` | `false` | Word-by-word transcripts timed to the agent's speech, where the voice model reports word timings. |
+| `expose_participant_attributes` | `false` | Make `{{participant_name}}` and `{{participant_<attribute>}}` from the call request available as variables. |
+| `publish_agent_attributes` | `true` | The agent publishes the call id and the current agent's id, so the page can show who is talking after a hand-off. |
+
+## Events
+
+`events` decides which events are recorded for each call, and so what
+`GET /api/v2/calls/{call_id}/events` returns and which event webhooks can fire.
+
+| Field | Default | |
+| --- | --- | --- |
+| `enabled` | `true` | |
+| `categories` | `error`, `handoff`, `lifecycle`, `tool`, `transcript` | Also available: `state`, `usage`, `telephony`, `transcript_partial`. |
+
+`transcript_partial` (interim transcripts) and `state` are noisy, which is why
+they are off; turn them on only if something reads them. `telephony` (keypad
+presses) is added automatically when [keypad input](#keypad-input) is on and
+`categories` is not set.
+
+## Audio
+
+| Field | Default | |
+| --- | --- | --- |
+| `noise_cancellation` | `auto` | `auto`, `none`, `standard`, `telephony` or `noise_only`. Override per channel with `noise_cancellation_web` and `noise_cancellation_phone`. |
+| `background` | | Sound mixed under the agent: `ambient` plays for the whole call, `thinking` while the agent works on a reply. Up to 5 clips each, such as `{"clip": {"builtin": "office_ambience"}, "volume": 0.3}`. |
+
+Built-in clips: `office_ambience`, `city_ambience`, `forest_ambience`,
+`crowded_room`, `keyboard_typing`, `keyboard_typing_alt`, `hold_music`.
+
+## Full reference
+
+Every field, default and limit is in the **API Reference** tab under **Voice API
+(v2)**, generated from the engine's own specification.

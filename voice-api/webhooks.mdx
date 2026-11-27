@@ -1,0 +1,428 @@
+---
+title: "Webhooks"
+description: "Get every call event pushed to your server, signed, retried and safe to deduplicate."
+---
+
+A webhook endpoint is a URL on your server that the Voice API posts to when
+something happens on a call: it started, it ended, a transcript is ready, a
+transfer failed. Polling `GET /api/v2/calls` works too, but a webhook tells you
+as it happens and costs no requests against your
+[rate limit](/voice-api/errors#rate-limits).
+
+An endpoint receives events for **every call in the workspace**. If you want to
+route by agent or by customer, do it on your side from the fields in the
+payload (`agent_id`, `labels`, `metadata`, `customer`).
+
+## Creating an endpoint
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/webhook-endpoints" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/webhooks/omnia",
+    "event_types": ["call.ended", "call.failed", "call.transcript_ready"],
+    "include_transcript": false
+  }'
+```
+
+<ParamField body="url" type="string" required>
+  Where deliveries are posted. 8 to 2048 characters. The address must be
+  reachable from the public internet: URLs that resolve to private or internal
+  networks are not delivered to.
+</ParamField>
+
+<ParamField body="event_types" type="string[]">
+  The [events](#events) this endpoint receives, at least one. Leave it out and
+  the endpoint gets the four original events: `call.started`, `call.answered`,
+  `call.ended` and `call.failed`. Every other event is opt-in, so adding new
+  event types to the platform never sends an existing endpoint traffic it did
+  not ask for.
+</ParamField>
+
+<ParamField body="active" type="boolean" default="true">
+  `false` stops deliveries to this endpoint without deleting it or its secret.
+</ParamField>
+
+<ParamField body="include_transcript" type="boolean" default="false">
+  Adds the call's transcript to `call.ended`. Off by default because a
+  transcript is the most sensitive thing a delivery can carry; if you only
+  need it sometimes, subscribe to `call.transcript_ready` instead.
+</ParamField>
+
+The response is `201` with the endpoint and its signing secret:
+
+```json
+{
+  "id": "ENDPOINT_ID",
+  "url": "https://example.com/webhooks/omnia",
+  "event_types": ["call.ended", "call.failed", "call.transcript_ready"],
+  "active": true,
+  "include_transcript": false,
+  "created_at": "2026-11-26T09:12:44Z",
+  "updated_at": "2026-11-26T09:12:44Z",
+  "secret": "..."
+}
+```
+
+<Warning>
+  `secret` is returned **only here and by
+  [`rotate-secret`](#rotating-the-secret)**. `GET` never returns it. Store it in
+  your secret manager straight away; if you lose it, rotate it.
+</Warning>
+
+## Managing endpoints
+
+| Request | What it does |
+| --- | --- |
+| `GET /api/v2/webhook-endpoints` | Every endpoint in the workspace, as `data`. Accepts `q` and the `created_at_gt` / `_lt` / `_ge` / `_le` filters |
+| `GET /api/v2/webhook-endpoints/{endpoint_id}` | One endpoint, without its secret |
+| `PATCH /api/v2/webhook-endpoints/{endpoint_id}` | Change `url`, `event_types`, `active` or `include_transcript`. Send only what changes |
+| `DELETE /api/v2/webhook-endpoints/{endpoint_id}` | `204`, no body. Deliveries stop |
+| `POST /api/v2/webhook-endpoints/{endpoint_id}/rotate-secret` | A new secret, returned once |
+
+`PATCH` replaces `event_types` as a whole list; it does not add to it. To add
+an event, send the complete new list.
+
+## Events
+
+| Type | Sent when | Extra in `data` |
+| --- | --- | --- |
+| `call.started` | The agent joined the call | — |
+| `call.ringing` | An outbound call is ringing (phone calls only) | — |
+| `call.answered` | The callee answered, or the web participant joined | — |
+| `call.voicemail_detected` | Voicemail detection reached a voicemail system or an unavailable mailbox | `amd` |
+| `call.ended` | The call ended | `report`; `transcript` with `include_transcript` |
+| `call.failed` | The call ended as `failed` | `report` |
+| `call.transcript_ready` | The final transcript was stored | `transcript` |
+| `call.analysis_ready` | The [post-call analysis](/voice-api/agents#analysis) was stored (agents with `analysis` only) | `analysis` |
+| `transfer.completed` / `transfer.failed` | A cold or warm transfer finished | `transfer`: `target`, `mode`, `reason`, `detail` |
+| `recording.completed` | The recording was uploaded | `recording`: `status`, `location`, `duration_s`, `size_bytes`, … |
+| `recording.failed` | The recording could not start or upload | `recording`: `status`, `error` |
+| `collect.completed` | A `collect` tool captured a value | `collect`: `tool_name`, `field`, a masked `preview` |
+| `call.inbound_request_failed` | A number's agent-request webhook failed or timed out and the fallback was used | `inbound_request` |
+| `campaign.started` | A campaign started dialling | `campaign`; `call` is `null` |
+| `campaign.completed` | Every contact is done, the campaign was cancelled, or its window closed | `campaign`; `call` is `null` |
+| `campaign.call.failed` | A contact was not reached and will not be retried | `campaign`, `customer`, `call` (when one was created) |
+
+Events that come from inside the call (`call.ringing`,
+`call.voicemail_detected`, `transfer.*`, `recording.failed`,
+`collect.completed`) are only produced when the agent records the matching
+event category in its `events.categories`. The defaults (`lifecycle`,
+`transcript`, `tool`, `handoff`, `error`) cover all of them, so this only
+matters if you narrowed that list.
+
+<Note>
+  Deliveries never contain the value a `collect` tool captured, or the
+  arguments and output of a tool marked sensitive. You get the same masked
+  copies as the call report. If you need the value itself, have the tool send
+  it to your API during the call.
+</Note>
+
+A phone number can also ask one of your webhook endpoints **which agent should
+answer** before it picks up. That is a request your server answers, not a
+notification, and it is described in
+[Phone numbers](/voice-api/phone-numbers).
+
+## Payload
+
+Every delivery is a `POST` with a JSON body of this shape:
+
+<ResponseField name="id" type="string">
+  The delivery id. The same value arrives in the `X-Voice-Event-Id` header.
+</ResponseField>
+
+<ResponseField name="type" type="string">
+  One of the [event types](#events).
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  When the event happened (RFC 3339).
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  <Expandable title="always present">
+    <ResponseField name="call" type="object | null">
+      The call resource, as `GET /api/v2/calls/{call_id}` returns it. `null` on
+      `campaign.started` and `campaign.completed`.
+    </ResponseField>
+    <ResponseField name="agent_id" type="string | null" />
+    <ResponseField name="agent_version" type="integer | null" />
+    <ResponseField name="labels" type="object">
+      The call's labels (a string map).
+    </ResponseField>
+    <ResponseField name="metadata" type="object">
+      The `metadata` you attached when creating the call.
+    </ResponseField>
+    <ResponseField name="customer" type="object | null">
+      `number`, `extension`, `name`, `email`, `external_id`: the customer given
+      when the call was created, or the campaign contact.
+    </ResponseField>
+    <ResponseField name="campaign_id" type="string | null" />
+    <ResponseField name="sip_call_id" type="string | null">
+      `null` for web calls.
+    </ResponseField>
+    <ResponseField name="end_reason_code" type="string | null">
+      Once the call has ended: a stable, machine-readable reason. Treat codes
+      you do not recognise as opaque; new ones are added.
+    </ResponseField>
+    <ResponseField name="end_reason_detail" type="string | null" />
+  </Expandable>
+</ResponseField>
+
+Plus the event's own section from the [table above](#events).
+
+```json call.ended
+{
+  "id": "EVENT_ID",
+  "type": "call.ended",
+  "created_at": "2026-11-26T09:31:07Z",
+  "data": {
+    "call": {
+      "id": "CALL_ID",
+      "channel": "outbound",
+      "status": "ended",
+      "agent_id": "front-desk",
+      "agent_version": 3,
+      "from_number": "+358401234567",
+      "to_number": "+358409876543",
+      "disposition": "completed",
+      "end_reason_code": "agent_end_call",
+      "started_at": "2026-11-26T09:28:41Z",
+      "answered_at": "2026-11-26T09:28:46Z",
+      "ended_at": "2026-11-26T09:31:06Z",
+      "duration_s": 140.2,
+      "labels": { "team": "west" },
+      "metadata": { "crm_ticket": "T-4821" }
+    },
+    "agent_id": "front-desk",
+    "agent_version": 3,
+    "labels": { "team": "west" },
+    "metadata": { "crm_ticket": "T-4821" },
+    "customer": { "number": "+358409876543", "name": "Aino Virtanen", "external_id": "cus_981" },
+    "campaign_id": null,
+    "sip_call_id": "...",
+    "end_reason_code": "agent_end_call",
+    "end_reason_detail": "Caller's question was answered",
+    "report": {
+      "disposition": "completed",
+      "end_reason_code": "agent_end_call"
+    }
+  }
+}
+```
+
+The call resource is shortened here; it has every field `GET /api/v2/calls/{call_id}`
+returns. `report` is the call report's summary without the transcript and
+usage, with `analysis` when the agent has one. For the full report, call
+`GET /api/v2/calls/{call_id}/report`.
+
+## Verifying signatures
+
+Anyone who learns your URL can post to it. Every delivery is signed with the
+endpoint's secret so you can tell a real one from a forgery:
+
+```
+X-Voice-Signature: t=1764149467,k=ENDPOINT_ID,v1=5f2c...e81a
+X-Voice-Event-Id:  EVENT_ID
+X-Voice-Event-Type: call.ended
+```
+
+- `t` is the Unix time (seconds) the delivery was signed
+- `k` is the **endpoint id**
+- `v1` is a hex HMAC-SHA256, keyed with the endpoint secret, over:
+
+```
+{t}.POST.{path}.{raw body}
+```
+
+`path` is the path of your endpoint URL, **without** the query string and
+URL-decoded: for `https://example.com/webhooks/omnia?src=v2` it is
+`/webhooks/omnia`.
+
+Three things break verification in practice:
+
+<AccordionGroup>
+  <Accordion title="Verifying parsed JSON instead of the raw body" icon="code">
+    Most frameworks parse the body before your handler runs. Re-serialising it
+    changes whitespace and key order, and the digest no longer matches. Read
+    the raw bytes, verify, then parse.
+  </Accordion>
+  <Accordion title="Using the path your proxy rewrote" icon="route">
+    The signature covers the path of the URL you registered. If a load
+    balancer or framework mounts your handler under a different path, pass the
+    registered path explicitly, as the examples below do.
+  </Accordion>
+  <Accordion title="No timestamp check" icon="clock">
+    A valid signature stays valid forever, so a captured delivery could be
+    replayed. Reject anything whose `t` is more than **300 seconds** from your
+    clock. Keep your server's clock synchronised.
+  </Accordion>
+</AccordionGroup>
+
+<CodeGroup>
+
+```js Node.js (Express)
+import express from "express";
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+const TOLERANCE_S = 300;
+
+// secrets: the current secret, plus the previous one while you rotate
+export function verifyOmniaSignature(header, path, rawBody, secrets) {
+  if (!header) return false;
+  const parts = {};
+  for (const piece of header.split(",")) {
+    const i = piece.indexOf("=");
+    if (i > 0) parts[piece.slice(0, i).trim()] = piece.slice(i + 1).trim();
+  }
+  const { t, v1 } = parts;
+  if (!/^\d+$/.test(t ?? "") || !/^[0-9a-f]{64}$/i.test(v1 ?? "")) return false;
+  if (Math.abs(Date.now() / 1000 - Number(t)) > TOLERANCE_S) return false;
+
+  const given = Buffer.from(v1, "hex");
+  return secrets.some((secret) => {
+    const expected = createHmac("sha256", secret)
+      .update(`${t}.POST.${path}.`)
+      .update(rawBody)
+      .digest();
+    return timingSafeEqual(expected, given);
+  });
+}
+
+const app = express();
+
+// express.raw keeps the body as a Buffer: do not use express.json() on this route
+app.post("/webhooks/omnia", express.raw({ type: "*/*" }), (req, res) => {
+  const ok = verifyOmniaSignature(
+    req.get("X-Voice-Signature"),
+    "/webhooks/omnia",
+    req.body,
+    [process.env.OMNIA_WEBHOOK_SECRET],
+  );
+  if (!ok) return res.sendStatus(401);
+
+  const delivery = JSON.parse(req.body.toString("utf8"));
+  res.sendStatus(204);          // acknowledge first...
+  enqueue(delivery);            // ...then do the work
+});
+```
+
+```python Python (Flask)
+import hashlib
+import hmac
+import os
+import time
+
+from flask import Flask, abort, request
+
+TOLERANCE_S = 300
+
+
+def verify_omnia_signature(header, path, raw_body: bytes, secrets) -> bool:
+    """secrets: the current secret, plus the previous one while you rotate."""
+    if not header:
+        return False
+    parts = {}
+    for piece in header.split(","):
+        key, sep, value = piece.partition("=")
+        if sep:
+            parts[key.strip()] = value.strip()
+    t, v1 = parts.get("t", ""), parts.get("v1", "").lower()
+    if not t.isdigit() or len(v1) != 64:
+        return False
+    if abs(time.time() - int(t)) > TOLERANCE_S:
+        return False
+
+    message = f"{t}.POST.{path}.".encode() + raw_body
+    return any(
+        hmac.compare_digest(
+            hmac.new(secret.encode(), message, hashlib.sha256).hexdigest(), v1
+        )
+        for secret in secrets
+    )
+
+
+app = Flask(__name__)
+
+
+@app.post("/webhooks/omnia")
+def omnia_webhook():
+    ok = verify_omnia_signature(
+        request.headers.get("X-Voice-Signature"),
+        "/webhooks/omnia",
+        request.get_data(),  # the raw bytes, before any parsing
+        [os.environ["OMNIA_WEBHOOK_SECRET"]],
+    )
+    if not ok:
+        abort(401)
+
+    enqueue(request.get_json())
+    return "", 204
+```
+
+</CodeGroup>
+
+Both compare in constant time (`timingSafeEqual`, `hmac.compare_digest`). A
+plain `==` leaks, through its timing, how many leading characters of a forged
+signature were right.
+
+## Rotating the secret
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/webhook-endpoints/ENDPOINT_ID/rotate-secret" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+The response is the endpoint with its new `secret`. Because `k` in the
+signature is the endpoint id, it stays the same across a rotation and cannot
+tell you which secret signed a delivery. So rotate in this order:
+
+<Steps>
+  <Step title="Accept both secrets">
+    Deploy your receiver with the current secret **and** a slot for the next
+    one: the examples above take a list and accept a match on any of them.
+  </Step>
+  <Step title="Rotate">
+    Call `rotate-secret` and put the new secret into that slot.
+  </Step>
+  <Step title="Drop the old secret">
+    Once deliveries verify against the new secret, and retries signed before
+    the rotation have had time to arrive, remove the old one.
+  </Step>
+</Steps>
+
+## Retries and acknowledging
+
+Answer with a **2xx status** as soon as the signature checks out. Anything
+else, or no answer, counts as a failed delivery, and failed deliveries are
+retried with exponential backoff for **up to 24 hours**. After that it is
+not retried again.
+
+Do the real work after you have answered, from a queue. A receiver that writes
+to a slow CRM before replying turns a slow afternoon at the CRM into a pile of
+retries, and each retry repeats work that may already have succeeded.
+
+<Tip>
+  If your receiver was down for longer than the retry window, rebuild what you
+  missed from `GET /api/v2/calls` with `created_at_ge` set to the start of the
+  outage. Webhooks are the fast path, the API is the record.
+</Tip>
+
+## Handling duplicates
+
+Retries mean you **will** see some deliveries more than once: your server
+processed it, but the reply was lost on the way back. Deduplicate on
+`X-Voice-Event-Id` (the body's `id`). It is identical on every retry of a
+delivery, so a unique constraint on it makes your handler safe to run twice:
+
+```sql
+INSERT INTO omnia_deliveries (event_id, type, received_at)
+VALUES ($1, $2, now())
+ON CONFLICT (event_id) DO NOTHING
+RETURNING event_id;   -- no row back: already handled, answer 2xx and stop
+```
+
+Do not rely on order either. A retried `call.answered` can arrive after
+`call.ended` for the same call. Use `created_at`, or the call's `status`, to
+decide what is newest.

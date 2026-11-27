@@ -30,11 +30,25 @@ point because someone trusted a document instead of the code:
 | voice webhooks | Do not exist — the only webhook model is chatbot-scoped |
 | `GET /credits` with an API key | Session-only, returns 401 |
 
+## API v2 (the Voice API engine)
+
+Pages under `voice-api/` document `/api/v2`, a gateway in `omnia-v/omnia`
+(`app/api/v2/[...path]/route.ts`, `lib/api/v2/gateway.ts`) in front of the Voice
+API engine. Its source of truth is `openapi-v2.json`, generated from the
+production engine by `scripts/api-v2-openapi.ts` in that repo. Copy it here
+whenever it is regenerated; never edit it by hand. The table above is about
+API v1: API v2 **does** have webhooks (`/api/v2/webhook-endpoints`).
+
+Never name the platforms underneath either engine anywhere in this repo, not even
+in this file. The generator refuses to write a spec that does, and the leak check
+below must print nothing.
+
 ## Checks that must pass
 
 ```bash
 npx mint@latest broken-links
 npx @redocly/cli@latest lint openapi.yaml
+grep -riE "l[i]vekit|ultr[a]vox|f[i]xie-ai" --exclude-dir=.git .   # leak check: must print nothing
 ```
 
 Both must be clean. Every endpoint mentioned in prose must exist in

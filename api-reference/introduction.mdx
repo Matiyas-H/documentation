@@ -15,6 +15,15 @@ your API key and send a real request from the page.
   continues to work. Prefer `api.omnia-voice.com` for new work.
 </Note>
 
+<Note>
+  **Two APIs, one key.** `/api/v1` (below) runs agents on the Realtime engine.
+  `/api/v2` runs agents on the [Voice API](/voice-api/overview) engine and is
+  listed under **Voice API (v2)** in the sidebar. Both take the same `X-API-Key`.
+  The conventions below are API v1's; API v2 uses snake_case fields, cursor
+  pagination and its own error shapes, described in
+  [Authentication, errors and limits](/voice-api/errors).
+</Note>
+
 ## Conventions
 
 **Authentication** — `X-API-Key` on every request. See

@@ -1,0 +1,83 @@
+---
+title: "Voice API"
+description: "The second way to build agents: you choose the speech-to-text, the language model and the voice."
+---
+
+Omnia Voice runs agents on two engines. Both answer the phone and the browser,
+both are billed the same way, and both live side by side in the same agent list
+in the dashboard. They differ in how an agent is built.
+
+| | **Realtime** | **Voice API** |
+| --- | --- | --- |
+| How it works | One speech model listens, thinks and talks in a single step | Speech-to-text → language model → text-to-speech, each one chosen by you |
+| Models | Chosen per agent from a short list | Any model in the [catalogue](/voice-api/models-and-voices), with backups if one fails |
+| Agents per call | One | Several, with hand-offs between them |
+| After the call | Transcript and recording | Transcript, recording, and [analysis](/voice-api/agents#analysis) you define |
+| API | `/api/v1` (the rest of this guide) | `/api/v2` (this section) |
+
+Choose **Realtime** for a straightforward conversation. Choose the **Voice API**
+when you need a specific model or voice, a multi-step flow that passes the caller
+between specialised agents, or structured results after every call.
+
+An agent's engine is fixed when you create it. In the dashboard, **Create agent**
+asks which one; through the API, `/api/v1/agents` creates Realtime agents and
+`/api/v2/agents` creates Voice API agents.
+
+## The API
+
+```
+https://api.omnia-voice.com/api/v2
+```
+
+API v2 uses the **same API keys** as API v1, sent the same way, in the
+`X-API-Key` header. What differs is the shape of the resources: Voice API agents
+are described by a single, versioned [agent definition](/voice-api/agents), and
+calls, numbers and webhooks are resources of their own.
+
+<Note>
+  The key must belong to a **workspace that has the Voice API enabled**.
+  Workspaces pinned to a data region cannot use the Voice API yet: their
+  requests are refused with `403 REGION_NOT_SUPPORTED`, because the engine runs
+  in one location only and their calls would leave their region.
+</Note>
+
+## What is in it
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/voice-api/quickstart">
+    An agent and its first call, in five requests.
+  </Card>
+  <Card title="Agents" icon="robot" href="/voice-api/agents">
+    The agent definition, section by section.
+  </Card>
+  <Card title="Tools" icon="wrench" href="/voice-api/tools">
+    Call your APIs, transfer, end the call, press keys.
+  </Card>
+  <Card title="Calls" icon="phone" href="/voice-api/calls">
+    Web, outbound and inbound calls, live control, reports.
+  </Card>
+  <Card title="Phone numbers" icon="hashtag" href="/voice-api/phone-numbers">
+    Connect your carrier and put an agent on a number.
+  </Card>
+  <Card title="Campaigns" icon="list-check" href="/voice-api/campaigns">
+    Call a list of people, with retries and a schedule.
+  </Card>
+  <Card title="Webhooks" icon="bell" href="/voice-api/webhooks">
+    Hear about every call as it ends.
+  </Card>
+  <Card title="Models and voices" icon="microphone" href="/voice-api/models-and-voices">
+    Pick the models and the voice for a language.
+  </Card>
+</CardGroup>
+
+The complete reference, with every field and an interactive playground, is in the
+**API Reference** tab under **Voice API (v2)**. It is generated from the engine's
+own specification, so it always matches what the API accepts.
+
+## Billing
+
+Voice API calls are metered exactly like other calls: per minute, rounded up,
+from the same credits. See [Credits](/concepts/credits). Requests that start
+something billable (a web or outbound call, a campaign) are refused up
+front with `402 INSUFFICIENT_BALANCE` when the workspace has no credit left,
+rather than starting a call that cannot be paid for.

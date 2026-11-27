@@ -49,6 +49,17 @@ widget on your website, or a raw WebSocket from your own application.
   </Card>
 </CardGroup>
 
+## Two engines
+
+Every agent runs on one of two engines, and both live side by side in the same
+dashboard and the same account.
+
+- **Realtime**: one speech model listens, thinks and talks. Built through
+  `/api/v1`, documented throughout this guide.
+- **Voice API**: you choose the speech-to-text, the language model and the voice,
+  chain several agents with hand-offs, and get analysis after every call. Built
+  through `/api/v2`, documented in [Voice API](/voice-api/overview).
+
 ## What you can build
 
 - **Inbound reception** — answer every call, day or night, in the caller's language

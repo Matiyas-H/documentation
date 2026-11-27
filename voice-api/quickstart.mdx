@@ -1,0 +1,133 @@
+---
+title: "Quickstart: Voice API"
+description: "Create a Voice API agent and have it place its first call."
+---
+
+You need an API key from a workspace with the Voice API enabled (Dashboard →
+**Agent API Keys**) and, for the phone call at the end, a number connected as
+described in [Phone numbers](/voice-api/phone-numbers).
+
+```bash
+export OMNIA_API_KEY="your-api-key"
+```
+
+<Steps>
+
+<Step title="Write the agent definition">
+
+A Voice API agent is one JSON document: the models it uses, and one or more
+agents with their instructions. This is the smallest useful one.
+
+```json agent.json
+{
+  "models": {
+    "stt": { "provider": "omnia", "model": "deepgram/nova-3", "language": "en" },
+    "llm": { "provider": "omnia", "model": "openai/gpt-4.1-mini", "temperature": 0.4 },
+    "tts": { "provider": "omnia", "model": "cartesia/sonic-3", "language": "en" }
+  },
+  "entry_agent": "main",
+  "agents": [
+    {
+      "id": "main",
+      "name": "Front desk",
+      "instructions": "You answer calls for Northside Dental. Help callers with opening hours (Monday to Friday, 8 to 16) and take a message for anything else: their name, number and what it is about. Keep every answer to one or two sentences.",
+      "greeting": {
+        "mode": "say",
+        "text": "Northside Dental, how can I help?",
+        "first_speaker": "agent"
+      }
+    }
+  ]
+}
+```
+
+Every model is addressed through the provider `omnia`; the model id says which
+model runs. [Models and voices](/voice-api/models-and-voices) shows how to list
+what is available and pick a voice.
+
+</Step>
+
+<Step title="Validate it">
+
+Validation is free and changes nothing. It catches what a call would otherwise
+fail on (an unknown model, a tool with no destination, a hand-off to an agent
+that does not exist) before anything is saved.
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/agents/validate" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"definition\": $(cat agent.json)}"
+```
+
+```json
+{ "valid": true, "errors": [], "warnings": [] }
+```
+
+Fix every entry in `errors`. Read the `warnings`: they are allowed, but each one
+names something the agent will probably do differently from what you meant.
+
+</Step>
+
+<Step title="Create the agent">
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/agents" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\": \"Front desk\", \"definition\": $(cat agent.json)}"
+```
+
+The response is the saved agent. Keep its `id`. Every later change with
+`PATCH /api/v2/agents/{agent_id}` creates a new `version`; calls always run the
+latest version unless you ask for a specific one.
+
+</Step>
+
+<Step title="Place a call">
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/calls/outbound" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "AGENT_ID",
+    "from_number_id": "NUMBER_ID",
+    "to": "+358401234567"
+  }'
+```
+
+`from_number_id` is the id of one of your [phone numbers](/voice-api/phone-numbers);
+`to` is in E.164 form (a leading `+`, country code, no spaces). The response is
+the call, with `status` `created`. It moves through `ringing` and `in_progress`
+to `ended` or `failed`.
+
+<Tip>
+  No number yet? Start a call in the browser instead with
+  `POST /api/v2/calls/web`, described in [Calls](/voice-api/calls#web-calls), or
+  use **Test call** in the dashboard's agent editor.
+</Tip>
+
+</Step>
+
+<Step title="Read what happened">
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/calls/CALL_ID" -H "X-API-Key: $OMNIA_API_KEY"
+curl "https://api.omnia-voice.com/api/v2/calls/CALL_ID/report" -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+The call carries its outcome (`disposition`, `end_reason_code`, `duration_s`);
+the report carries the conversation. To be told when calls end instead of asking,
+register a [webhook](/voice-api/webhooks).
+
+</Step>
+
+</Steps>
+
+<Warning>
+  Automated outbound calling is regulated and the rules differ by country:
+  consent, permitted hours, identification, do-not-call registers. Check what
+  applies where you are dialling before you call anyone who did not ask to be
+  called.
+</Warning>

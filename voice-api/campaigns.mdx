@@ -1,0 +1,277 @@
+---
+title: "Campaigns (batch outbound calls)"
+description: "Call a list of people from one number, a few at a time, with retries and a calling window."
+---
+
+A **campaign** calls a list of customers from one of your
+[phone numbers](/voice-api/phone-numbers). It dials a few at a time, re-dials the
+ones who did not pick up, and stops when the list is done or the calling window
+closes.
+
+Use a campaign rather than a loop of `POST /api/v2/calls/outbound` requests.
+The loop has to solve concurrency, retries and calling hours itself, and gets
+them wrong in exactly the cases that matter: a hundred calls placed at once, or
+a busy number dialled again a second later.
+
+## Create a campaign
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/campaigns" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "December appointment reminders",
+    "agent_id": "AGENT_ID",
+    "from_number_id": "NUMBER_ID",
+    "customers": [
+      {
+        "number": "+358401234567",
+        "name": "Ada Lovelace",
+        "external_id": "crm-42",
+        "variables": { "appointment_time": "Tuesday at 10:00" }
+      },
+      {
+        "number": "+358407654321",
+        "name": "Grace Hopper",
+        "external_id": "crm-43",
+        "variables": { "appointment_time": "Wednesday at 14:30" },
+        "metadata": { "vip": true }
+      }
+    ],
+    "schedule": {
+      "earliest_at": "2026-12-01T09:00:00+02:00",
+      "latest_at": "2026-12-01T17:00:00+02:00"
+    },
+    "max_concurrency": 3,
+    "retry": { "no_answer": 2, "busy": 2, "delay_s": 900 },
+    "overrides": { "variables": { "clinic_name": "Northside Dental" } },
+    "labels": { "team": "reception" },
+    "metadata": { "crm_list": 7 }
+  }'
+```
+
+The response is `201` with the [campaign](#the-campaign-resource). Without a
+`schedule` it starts dialling straight away.
+
+<Note>
+  Creating a campaign needs credit, and so does resuming one. Without it the
+  request is refused with `402 INSUFFICIENT_BALANCE`. Every call is billed per
+  minute like any other Omnia call; see [Credits](/concepts/credits).
+</Note>
+
+<ParamField body="name" type="string" required>
+  1–128 characters.
+</ParamField>
+
+<ParamField body="from_number_id" type="string" required>
+  The number every call comes from. It must allow outbound calls.
+</ParamField>
+
+<ParamField body="agent_id" type="string">
+  The stored agent that makes the calls, optionally pinned with
+  `agent_version`. Or send a whole [agent definition](/voice-api/agents) as
+  `agent`.
+</ParamField>
+
+<ParamField body="customers" type="array" required>
+  1–1000 people to call, each number once. Each entry:
+
+  - `number` (required): E.164, `^\+[1-9]\d{6,14}$`
+  - `name`, `email`, `external_id`, `extension`: who they are, stored on their
+    call as `customer`
+  - `variables`: values for this person's call (`{{appointment_time}}` above)
+  - `metadata`: merged over the campaign's `metadata` for this person's call
+</ParamField>
+
+<ParamField body="schedule" type="object">
+  The calling window: `earliest_at` (required) and `latest_at`. See
+  [Calling window](#calling-window).
+</ParamField>
+
+<ParamField body="max_concurrency" type="integer" default="3">
+  How many calls run at once, 1–20.
+</ParamField>
+
+<ParamField body="retry" type="object">
+  Re-dialling. See [Retries](#retries).
+</ParamField>
+
+<ParamField body="overrides" type="object">
+  A partial agent definition applied to every call of the campaign. Its
+  `variables` are campaign-wide values; a customer's own `variables` win over
+  them.
+</ParamField>
+
+<ParamField body="labels" type="object">
+  Up to 20 string tags, copied to every call.
+</ParamField>
+
+<ParamField body="metadata" type="object">
+  Any JSON object, copied to every call (with each customer's `metadata` merged
+  over it).
+</ParamField>
+
+Every call the campaign places carries `campaign_id`, so
+`GET /api/v2/calls?campaign_id=…` finds them, and the customer as `customer`, so
+your webhook handler knows who was called without a lookup.
+
+<Warning>
+  A campaign cannot be edited once it is created: there is no way to change its
+  settings or add customers. To change course, `cancel` it and create a new one.
+</Warning>
+
+## Calling window
+
+`schedule.earliest_at` is when dialling starts; until then the campaign is
+`scheduled`. Once `latest_at` has passed, customers not yet called are cancelled
+and the campaign completes. Calls already in progress finish normally.
+
+<Warning>
+  The window is **one** span of time, not daily calling hours. A campaign from
+  Monday 09:00 to Friday 17:00 will also dial on Monday night. For several days
+  of calling within business hours, create one campaign per day.
+</Warning>
+
+Times are RFC 3339. Give them with an offset (`+02:00`) or in UTC (`Z`) so the
+window is the one you meant.
+
+## Retries
+
+<ParamField body="retry.no_answer" type="integer" default="0">
+  Extra attempts for a customer who did not answer, 0–5.
+</ParamField>
+
+<ParamField body="retry.busy" type="integer" default="0">
+  Extra attempts for a busy line, 0–5.
+</ParamField>
+
+<ParamField body="retry.delay_s" type="integer" default="300">
+  Wait between attempts, 30–86400 seconds. Re-dialling a busy number a few
+  seconds later rarely works; minutes, or hours, do.
+</ParamField>
+
+Only `no_answer` and `busy` outcomes are retried. A customer who declined, or
+whose call failed, is not called again. By default there are no retries at all.
+
+## Statuses
+
+| `status` | Meaning |
+| --- | --- |
+| `scheduled` | Waiting for `schedule.earliest_at` |
+| `running` | Dialling |
+| `paused` | No new calls; you paused it, or the workspace ran out of credit |
+| `completed` | Every customer is done, or the calling window closed |
+| `cancelled` | You cancelled it |
+
+<Note>
+  When the workspace runs out of credit mid-campaign, the campaign is paused
+  rather than failing the remaining customers, and `last_error` says why. Top up,
+  then `resume`.
+</Note>
+
+## Pause, resume, cancel
+
+```bash
+curl -X POST "https://api.omnia-voice.com/api/v2/campaigns/CAMPAIGN_ID/pause" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+
+curl -X POST "https://api.omnia-voice.com/api/v2/campaigns/CAMPAIGN_ID/resume" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+
+curl -X POST "https://api.omnia-voice.com/api/v2/campaigns/CAMPAIGN_ID/cancel" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+Each returns `200` with the campaign.
+
+- **Pause** stops placing new calls. Calls in progress finish normally.
+- **Resume** carries on where it stopped. It needs credit.
+- **Cancel** cancels every customer not yet dialled. Calls in progress finish
+  normally. It cannot be undone.
+
+## The campaign resource
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/campaigns/CAMPAIGN_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+`id`, `name`, `status`, `agent_id`, `agent_version`, `from_number_id`,
+`schedule`, `max_concurrency`, `retry`, `overrides`, `labels`, `metadata`,
+`created_at`, `updated_at`, `started_at`, `completed_at`, `last_error`, and:
+
+<ResponseField name="counters" type="object">
+  How many customers are in each state: `total`, `queued`, `dialing`,
+  `in_progress`, `completed`, `failed`, `cancelled`. Poll this for a progress
+  bar.
+</ResponseField>
+
+List campaigns with `GET /api/v2/campaigns`: filter by `status`, search with
+`q`, narrow with `created_at_gt` / `_ge` / `_lt` / `_le`, page with `limit`
+(1–100, default 20) and `cursor`. The response is
+`{ "data": [...], "next_cursor": … }`.
+
+## Contacts
+
+Each customer becomes a **contact** that tracks them through the campaign.
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/campaigns/CAMPAIGN_ID/contacts?status=failed" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+| `status` | Meaning |
+| --- | --- |
+| `queued` | Waiting to be dialled, or to be retried |
+| `dialing` | A call is being placed |
+| `in_progress` | On the phone |
+| `completed` | Done |
+| `failed` | Not reached with no retries left, or the call could not be placed |
+| `cancelled` | Not dialled: the campaign was cancelled or the window closed |
+
+<ResponseField name="customer" type="object">Who, as you sent it.</ResponseField>
+<ResponseField name="variables" type="object">Their call's variables.</ResponseField>
+<ResponseField name="metadata" type="object">Their metadata.</ResponseField>
+<ResponseField name="position" type="integer">Their place in the list.</ResponseField>
+<ResponseField name="attempts" type="integer">Calls placed so far.</ResponseField>
+<ResponseField name="next_attempt_at" type="string">When they are dialled next.</ResponseField>
+<ResponseField name="call_id" type="string">Their latest call.</ResponseField>
+<ResponseField name="end_reason_code" type="string">
+  How their latest call ended; see [Calls](/voice-api/calls#statuses).
+</ResponseField>
+<ResponseField name="last_error" type="string">Why a call could not be placed, if one could not.</ResponseField>
+
+Filter with `status`; page with `limit` (1–1000, default 100) and `cursor`.
+
+<Tip>
+  `completed` means the call happened, not that it went well. To know whether
+  the customer confirmed, read the call's `analysis` or the
+  [report](/voice-api/calls#the-report).
+</Tip>
+
+## Calls
+
+```bash
+curl "https://api.omnia-voice.com/api/v2/campaigns/CAMPAIGN_ID/calls?status=ended" \
+  -H "X-API-Key: $OMNIA_API_KEY"
+```
+
+Every call the campaign placed, retries included, as
+[call resources](/voice-api/calls#the-call-resource). Filter by call `status`;
+page with `limit` (1–100, default 20) and `cursor`.
+
+## Being told
+
+Instead of polling, subscribe a [webhook endpoint](/voice-api/webhooks) to:
+
+- `campaign.started`: dialling began.
+- `campaign.completed`: every customer is done, the campaign was cancelled, or
+  the window closed.
+- `campaign.call.failed`: one customer will not be retried.
+
+<Warning>
+  Automated outbound calling is regulated and the rules differ sharply by
+  country: consent, permitted hours, identification, do-not-call registers.
+  Check what applies where you are dialling before you start a campaign. This is
+  your obligation, not ours.
+</Warning>
