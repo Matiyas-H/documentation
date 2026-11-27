@@ -349,7 +349,7 @@ The `inbound` object on a number:
 <ParamField body="agent_source" type="enum" default="assigned">
   `assigned`: the number's agent takes every call. `webhook`: before the call is
   answered, Omnia asks your endpoint which agent takes it. See
-  [Webhooks](/voice-api/webhooks).
+  [Choosing the agent for each inbound call](/voice-api/webhooks#choosing-the-agent-for-each-inbound-call).
 </ParamField>
 
 <ParamField body="webhook_endpoint_id" type="string">
@@ -357,8 +357,10 @@ The `inbound` object on a number:
 </ParamField>
 
 <ParamField body="fallback_destination" type="string">
-  `tel:+E164` or `sip:user@host`. Used with the agent-request webhook; see
-  [Webhooks](/voice-api/webhooks).
+  `tel:+E164` or `sip:user@host`. Accepted and stored, but not used yet: when
+  the agent-request webhook fails, the number's own agent answers, or the call
+  is refused if the number has none. To send callers somewhere, have your
+  webhook answer with `transfer_to`.
 </ParamField>
 
 <Note>

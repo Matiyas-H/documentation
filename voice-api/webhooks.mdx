@@ -97,7 +97,7 @@ an event, send the complete new list.
 | `call.transcript_ready` | The final transcript was stored | `transcript` |
 | `call.analysis_ready` | The [post-call analysis](/voice-api/agents#analysis) was stored (agents with `analysis` only) | `analysis` |
 | `transfer.completed` / `transfer.failed` | A cold or warm transfer finished | `transfer`: `target`, `mode`, `reason`, `detail` |
-| `recording.completed` | The recording was uploaded | `recording`: `status`, `location`, `duration_s`, `size_bytes`, … |
+| `recording.completed` | The recording was uploaded | `recording`: `egress_id` (the recording's id, `rec_…`), `status`, `location`, `duration_s`, `size_bytes`, … |
 | `recording.failed` | The recording could not start or upload | `recording`: `status`, `error` |
 | `collect.completed` | A `collect` tool captured a value | `collect`: `tool_name`, `field`, a masked `preview` |
 | `call.inbound_request_failed` | A number's agent-request webhook failed or timed out and the fallback was used | `inbound_request` |
@@ -121,8 +121,7 @@ matters if you narrowed that list.
 
 A phone number can also ask one of your webhook endpoints **which agent should
 answer** before it picks up. That is a request your server answers, not a
-notification, and it is described in
-[Phone numbers](/voice-api/phone-numbers).
+notification; see [Choosing the agent for each inbound call](#choosing-the-agent-for-each-inbound-call).
 
 ## Payload
 
@@ -160,7 +159,9 @@ Every delivery is a `POST` with a JSON body of this shape:
     </ResponseField>
     <ResponseField name="campaign_id" type="string | null" />
     <ResponseField name="sip_call_id" type="string | null">
-      `null` for web calls.
+      A stable id of the phone call (`sip_…`): the same on every event of the
+      call and on the [agent request](#choosing-the-agent-for-each-inbound-call),
+      so you can join them up. `null` for web calls.
     </ResponseField>
     <ResponseField name="end_reason_code" type="string | null">
       Once the call has ended: a stable, machine-readable reason. Treat codes
@@ -201,7 +202,7 @@ Plus the event's own section from the [table above](#events).
     "metadata": { "crm_ticket": "T-4821" },
     "customer": { "number": "+358409876543", "name": "Aino Virtanen", "external_id": "cus_981" },
     "campaign_id": null,
-    "sip_call_id": "...",
+    "sip_call_id": "sip_6b1e0c2d9a4f7e8b1c3d5a70",
     "end_reason_code": "agent_end_call",
     "end_reason_detail": "Caller's question was answered",
     "report": {
@@ -216,6 +217,184 @@ The call resource is shortened here; it has every field `GET /api/v2/calls/{call
 returns. `report` is the call report's summary without the transcript and
 usage, with `analysis` when the agent has one. For the full report, call
 `GET /api/v2/calls/{call_id}/report`.
+
+## Choosing the agent for each inbound call
+
+Normally a [phone number](/voice-api/phone-numbers) has one agent, and that
+agent answers every call. Set the number's `inbound.agent_source` to `webhook`
+and, before the call is answered, Omnia asks one of your endpoints what to do
+with it instead: which agent, with which variables, or whether to refuse or
+transfer the call. Use it to route by caller (a known customer goes to their
+account manager's agent), by time, or by what your CRM knows.
+
+```bash
+curl -X PATCH "https://api.omnia-voice.com/api/v2/phone-numbers/NUMBER_ID" \
+  -H "X-API-Key: $OMNIA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "inbound": {
+      "agent_source": "webhook",
+      "webhook_endpoint_id": "ENDPOINT_ID"
+    }
+  }'
+```
+
+`inbound` is replaced as a whole, so include the number's other inbound
+settings you have changed from their defaults; see
+[Phone numbers](/voice-api/phone-numbers).
+
+The endpoint is an ordinary [webhook endpoint](#creating-an-endpoint), and the
+request is signed with its secret exactly like a delivery, so the
+[verification code](#verifying-signatures) works unchanged. The request does
+not depend on the endpoint's `event_types`.
+
+### The request
+
+A `POST` with these headers:
+
+```
+X-Voice-Signature: t=1764149467,k=ENDPOINT_ID,v1=5f2c...e81a
+X-Voice-Event-Type: call.inbound_request
+X-Voice-Call-Id: CALL_ID
+```
+
+and this body:
+
+```json call.inbound_request
+{
+  "type": "call.inbound_request",
+  "call_id": "CALL_ID",
+  "tenant_id": "WORKSPACE_ID",
+  "phone_number_id": "NUMBER_ID",
+  "phone_number": "+358401234567",
+  "caller_number": "+358409876543",
+  "sip_call_id": "sip_6b1e0c2d9a4f7e8b1c3d5a70",
+  "sip_attributes": {
+    "sip.phoneNumber": "+358409876543",
+    "sip.trunkPhoneNumber": "+358401234567",
+    "sip.h.x-crm-id": "crm-77"
+  },
+  "labels": { "team": "west" },
+  "assigned_agent_id": "front-desk",
+  "assigned_agent_version": null,
+  "received_at": "2026-11-26T09:28:40Z"
+}
+```
+
+<ResponseField name="call_id" type="string">
+  The id the call will have once it is accepted. Every later webhook and
+  `GET /api/v2/calls/{call_id}` use it.
+</ResponseField>
+<ResponseField name="phone_number" type="string">
+  The number that was called (E.164).
+</ResponseField>
+<ResponseField name="caller_number" type="string | null">
+  Who is calling, when the carrier sent it.
+</ResponseField>
+<ResponseField name="sip_attributes" type="object">
+  `sip.phoneNumber` (the caller), `sip.trunkPhoneNumber` (the called number),
+  the SIP headers the number keeps (`sip.h.x-…`, see the number's
+  `include_headers`) and custom attributes. This is how a PBX or contact
+  centre hands you a customer id.
+</ResponseField>
+<ResponseField name="labels" type="object">
+  The phone number's labels.
+</ResponseField>
+<ResponseField name="assigned_agent_id" type="string | null">
+  The number's own agent: the one that answers if your endpoint does not.
+</ResponseField>
+
+### The answer
+
+Answer `2xx` with a JSON object. Every field is optional, and `{}` (or an empty
+body) means "answer with the number's own agent".
+
+<ParamField body="agent_id" type="string">
+  A stored agent that takes the call.
+</ParamField>
+<ParamField body="agent_version" type="integer">
+  Pin a version of `agent_id`. Default: the latest.
+</ParamField>
+<ParamField body="agent" type="object">
+  A complete [agent definition](/voice-api/agents), for an agent made up for
+  this one call. Validated like a stored one.
+</ParamField>
+<ParamField body="variables" type="object">
+  Values for the agent's [variables](/voice-api/agents#variables), up to 100
+  strings. Values filled from SIP headers are set first, so these win.
+</ParamField>
+<ParamField body="metadata" type="object">
+  Stored on the call as `metadata`, and returned on every webhook of the call,
+  exactly as if you had created the call yourself.
+</ParamField>
+<ParamField body="reject" type="object">
+  Refuse the call. `message` (up to 500 characters) is spoken to the caller
+  before hanging up; without it, the number's unavailable message is.
+</ParamField>
+<ParamField body="transfer_to" type="string">
+  Transfer the caller straight away, to `tel:+E164` or `sip:user@host`. The
+  transfer is made by an agent, so it needs one: name it with `agent_id` or
+  `agent`, or have one assigned to the number.
+</ParamField>
+
+When several are given, `reject` wins over `agent`, `agent` over `agent_id`,
+and `agent_id` over the number's own agent.
+
+```js Node.js (Express)
+app.post("/webhooks/omnia", express.raw({ type: "*/*" }), async (req, res) => {
+  if (!verifyOmniaSignature(req.get("X-Voice-Signature"), "/webhooks/omnia", req.body, secrets)) {
+    return res.sendStatus(401);
+  }
+  const body = JSON.parse(req.body.toString("utf8"));
+  if (body.type !== "call.inbound_request") {
+    res.sendStatus(204);          // an ordinary delivery
+    return enqueue(body);
+  }
+
+  // Keep this fast: the caller hears ringing until you answer.
+  const customer = await crm.findByPhone(body.caller_number, { timeoutMs: 1500 });
+  if (!customer) return res.json({});      // the number's own agent
+
+  res.json({
+    agent_id: customer.vip ? "vip-desk" : "front-desk",
+    variables: { customer_name: customer.firstName },
+    metadata: { crm_id: customer.id },
+  });
+});
+```
+
+### Time limit and failures
+
+The caller hears ringing while your server decides, so the request has a
+**5 second** limit and is **not retried**. Answer from what you can look up
+quickly, and fall back to `{}` rather than wait on a slow system.
+
+If the request fails (a timeout, a non-2xx status, a body that is not a valid
+answer or over 256 KB, an endpoint that was deleted or disabled), the call is
+not lost:
+
+- a number with its own agent: **that agent answers**;
+- a number without one: the call is **refused** with the number's unavailable
+  message.
+
+Either way the call records a `call.inbound_request_failed` event, and
+endpoints subscribed to it receive it as a webhook. Its `inbound_request` has
+`endpoint_id`, `fallback` (`assigned_agent` or `reject`) and `reason`:
+
+| `reason` | What went wrong |
+| --- | --- |
+| `timeout` | No answer within the time limit |
+| `request_failed` | The connection failed |
+| `status_<code>` | Your server answered with that non-2xx status |
+| `invalid_response` | Not a JSON object, a field of the wrong type, or over 256 KB |
+| `endpoint_not_found` / `endpoint_inactive` | The endpoint was deleted or set `active: false` |
+| `destination_blocked` | The URL resolves to a private or internal network |
+
+<Tip>
+  Give numbers that use the webhook an agent of their own anyway. Then an
+  outage on your side means callers reach a general agent instead of being
+  turned away.
+</Tip>
 
 ## Verifying signatures
 
